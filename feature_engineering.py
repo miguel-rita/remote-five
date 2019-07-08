@@ -87,7 +87,6 @@ def calc_CM_pair_features(max_terms, save_dir=None, save_name_prefix=None):
         pd.DataFrame(data=new_feats[1], columns=feat_names).to_hdf(f'{save_dir}/{save_name_prefix}_test.h5', key='df', mode='w')
 
 if __name__ == '__main__':
-
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
     calc_CM_pair_features(max_terms=15, save_dir='features', save_name_prefix='cm_unsorted_maxterms_15')
 

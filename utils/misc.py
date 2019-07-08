@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import ase
 
 def save_feature_importance(feature_importance_df, num_feats, relative_save_path=None):
     '''
@@ -25,7 +26,7 @@ def save_feature_importance(feature_importance_df, num_feats, relative_save_path
     y_size = np.min([feats.shape[0], num_feats])  # Num. of feats to plot
     y_pos = np.arange(feats.shape[0])
 
-    fig, ax = plt.subplots(figsize=(14, y_size / 2.5))
+    fig, ax = plt.subplots(figsize=(14, y_size/2.5))
     ax.barh(y_pos, feats.values[:, 1], align='center', color='#118715')
     ax.set_yticks(y_pos)
     ax.set_yticklabels(feats.values[:, 0])
@@ -53,3 +54,16 @@ def generate_sub(test_preds, sub_path):
     template = pd.read_csv('data/sample_submission.csv')
     template.loc[:, 'scalar_coupling_constant'] = test_preds
     template.to_csv(sub_path, index=False)
+
+def expand_dataset(path_to_csv_dataset):
+    '''
+    Add index and position columns for all atoms along a J bond
+
+    :param path_to_csv_dataset:
+    :return:
+    '''
+
+    ase.Atom()
+    print(1)
+
+expand_dataset('a')

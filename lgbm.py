@@ -46,6 +46,7 @@ class LgbmModel:
                 early_stopping_rounds = run_params['early_stopping_rounds'],
                 verbose_eval = run_params['verbose_eval'],
             )
+
             self.bsts.append(bst)
 
             oof_pred = bst.predict(x_val_fold)
@@ -76,26 +77,28 @@ class LgbmModel:
         timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
         full_model_name = f'{model_name}_{np.mean(fold_metrics):.2f}_{timestamp}'
 
-        if save_feat_importances:
-            save_feature_importance(
-                feature_importance_df=feature_importance_df,
-                num_feats=100,
-                relative_save_path=f'./importances/{full_model_name}.png',
-            )
-
         if save_model:
-            print('> lgbm : Saving model . . .')
+            print('> lgbm : Saving boosters . . .')
             model_dir = f'models/{full_model_name}'
             if not os.path.exists(model_dir):
                 os.makedirs(f'models/{full_model_name}')
 
             # Save fold info
             with open(f'{model_dir}/fold_info.pkl', 'wb') as h:
-                pickle.dump(self.fold_info, h, protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump(self.fold_info, h)
 
             # Save boosters
             for i, bst in enumerate(self.bsts):
-                pickle.dump(bst, open(f'{model_dir}/bst_{i:d}_metric_{fold_metrics[i]:.4f}.pkl', 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
+                bst.save_model(f'{model_dir}/bst_{i:d}_metric_{fold_metrics[i]:.4f}.bst')
+
+            print('> lgbm : . . . done saving boosters.')
+
+        if save_feat_importances: # After saving boosters, to prevent unknown interaction between mpl and lgbm
+            save_feature_importance(
+                feature_importance_df=feature_importance_df,
+                num_feats=100,
+                relative_save_path=f'./importances/{full_model_name}.png',
+            )
 
     def load(self, model_dir):
         if not os.path.exists(model_dir):
@@ -110,8 +113,9 @@ class LgbmModel:
         self.bsts = [None]*len(bst_paths)
         for bst_path in bst_paths:
             bst_num = int(re.search('bst_\d+_', bst_path).group()[4:-1])
-            print('Loading bst number', bst_num, 'path', bst_path)
-            self.bsts[bst_num] = pickle.load(open(bst_path, 'rb'))
+            print(f'Loading bst number {bst_num:d} at path {bst_path}')
+            self.bsts[bst_num] = lgbm.Booster(model_file=bst_path)
+        print('Done loading')
 
     def predict(self, dataset, is_train):
         '''

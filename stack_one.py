@@ -51,9 +51,9 @@ Model training
 
 lgbm_model = LgbmModel()
 
-fit = bool(1)
+fit = bool(0)
 sub = bool(1)
-model_name = 'leaf30_500_15'
+model_name = 'v2'
 
 if fit:
     lgbm_model.fit(
@@ -72,7 +72,7 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':500,
+            'num_boost_round':25000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },
@@ -84,11 +84,13 @@ if fit:
         random_seed=42
     )
 else:
-    model_dir = 'models/leaf30_1000_15_0.14_2019-06-26 00:34:18'
+    model_dir = 'models/v2_-0.38_2019-07-07 22:49:48'
+    ts = model_dir.split('/')[-1]
     metric_val = re.search('_.?\d\.\d\d_', model_dir).group()
     lgbm_model.load(model_dir)
     y_preds = lgbm_model.predict(
         dataset=x_test,
         is_train=False,
     )
-    generate_sub(y_preds, sub_path=f'subs/{model_name}{metric_val}.csv')
+    generate_sub(y_preds, sub_path=f'subs/{model_name}{metric_val}{ts}.csv')
+    # generate_sub(y_preds, sub_path=f'subs/{model_name}_debug.csv')
