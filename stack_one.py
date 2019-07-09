@@ -53,7 +53,7 @@ lgbm_model = LgbmModel()
 
 fit = bool(0)
 sub = bool(1)
-model_name = 'v2'
+model_name = 'v3'
 
 if fit:
     lgbm_model.fit(
@@ -72,7 +72,7 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':25000,
+            'num_boost_round':100000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },
@@ -84,7 +84,7 @@ if fit:
         random_seed=42
     )
 else:
-    model_dir = 'models/v2_-0.38_2019-07-07 22:49:48'
+    model_dir = 'models/v3_-0.50_2019-07-08 20:20:13'
     ts = model_dir.split('/')[-1]
     metric_val = re.search('_.?\d\.\d\d_', model_dir).group()
     lgbm_model.load(model_dir)
