@@ -2,6 +2,7 @@ import glob, tqdm, pickle
 import numpy as np
 import pandas as pd
 import qml
+import cProfile
 
 def inv_tri(cm_tri, size):
     '''
@@ -86,9 +87,114 @@ def calc_CM_pair_features(max_terms, save_dir=None, save_name_prefix=None):
         pd.DataFrame(data=new_feats[0], columns=feat_names).to_hdf(f'{save_dir}/{save_name_prefix}_train.h5', key='df', mode='w')
         pd.DataFrame(data=new_feats[1], columns=feat_names).to_hdf(f'{save_dir}/{save_name_prefix}_test.h5', key='df', mode='w')
 
+def expand_dataset(save_path=None):
+    '''
+    Add features and info to original train/test dataframes
+
+    :param save_path: where to save expanded dataset if provided
+    :return:
+    '''
+
+    # If more than 1 path possible for J coupling, pick p'th path
+    p = 0
+
+    # Load train/test datasets, as well as struct info
+    train, test = pd.read_csv('data/train.csv'), pd.read_csv('data/test.csv')
+    struct = pd.read_csv('data/structures.csv')
+
+    # Load report dict
+    with open(f'data/aux/rep_dict.pkl', 'rb') as h:
+        rep_dict = pickle.load(h)
+    
+    for name, df in zip(['train', 'test'], [train, test]):
+        expand_df = df.copy()#.iloc[:10000, :]
+
+        # Num of bonds of the J interaction
+        expand_df['chain'] = expand_df['type'].apply(lambda t: int(t[0]))
+
+        accum = [] # Accumulate line computations in list to avoid writing to pandas df inside loop
+        for i, row in tqdm.tqdm(enumerate(expand_df.itertuples(index=True)), total=expand_df.shape[0]):
+
+            # Accumulator intermediate vars
+            j3_middle_ixs = [np.nan, np.nan]
+            j3_torsion_angle = np.nan
+            j2_middle_ix = np.nan
+            j2_bond_angle = np.nan
+
+            bond_angles = rep_dict[row.molecule_name]['bond_angles']
+            torsion_angles = rep_dict[row.molecule_name]['torsion_angles']
+
+            # Fill middle index for 2J coups
+            if row.chain == 2:
+                valid_bonds = bond_angles[ # Consider both start-end or end-start
+                    ((bond_angles[:, 0] == row.atom_index_0) & (bond_angles[:, -2] == row.atom_index_1)) |
+                    ((bond_angles[:, 0] == row.atom_index_1) & (bond_angles[:, -2] == row.atom_index_0))
+                , :]
+
+                if valid_bonds.shape[0] > 1:
+                    print(f'> Warning: 2J coupling from {row.atom_index_0:d} to {row.atom_index_1} on molecule'
+                          f' {row.molecule_name} has {valid_bonds.shape[0]:d} possible paths with angles {valid_bonds[:,-1]}.'
+                          f' Considering first path found.')
+
+                j2_middle_ix = valid_bonds[p, 1]  # Added index of middle atom
+                j2_bond_angle = valid_bonds[p, -1] # Bond angle features
+
+
+            # Fill middle indexes for 3J coups
+            elif row.chain == 3:
+                valid_torsions = torsion_angles[ # Consider both start-end or end-start
+                    ((torsion_angles[:, 0] == row.atom_index_0) & (torsion_angles[:, -2] == row.atom_index_1)) |
+                    ((torsion_angles[:, 0] == row.atom_index_1) & (torsion_angles[:, -2] == row.atom_index_0))
+                ,:]
+
+                # If beginning of path in report is symmetric from specified path in train, pick correct order for middle 2 atoms
+                rev_path = True if valid_torsions[p,0] == row.atom_index_1 else False
+
+                if valid_torsions.shape[0] > 1:
+                    print(f'> Warning: 3J coupling from {row.atom_index_0:d} to {row.atom_index_1} on molecule'
+                          f' {row.molecule_name} has {valid_torsions.shape[0]:d} possible paths with angles {valid_torsions[:,-1]}.'
+                          f' Considering first path found.')
+                middle_ixs = valid_torsions[p, 1:3]
+                if rev_path:
+                    middle_ixs = middle_ixs[::-1]
+
+                j3_middle_ixs = middle_ixs # Added indexes of middle atoms
+                j3_torsion_angle = valid_torsions[p, -1] # Torsion angle features
+
+            accum.append([j2_middle_ix, j3_middle_ixs[0], j3_middle_ixs[1], j2_bond_angle, j3_torsion_angle])
+
+        extra_info = np.vstack(accum)
+        # Assign accumulated info to columns in df
+        col_names = [
+            'j2_middle_ix',
+            'j3_middle_ix_0',
+            'j3_middle_ix_1',
+            'j2_bond_angle',
+            'j3_torsion_angle',
+        ]
+        for i, col_name in enumerate(col_names):
+            expand_df[col_name] = extra_info[:, i]
+
+        if save_path is not None:
+            expand_df.to_hdf(save_path + '/' + f'{name}_expanded.h5', key='none', mode='w')
+
+def topology_features(save_dir, prefix):
+    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf('data/test_expanded.h5', mode='r')
+
+    angles = ['j2_bond_angle', 'j3_torsion_angle']
+    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
+
+        feats = np.vstack([np.cos(df[col]) for col in angles]).T
+        new_feats = pd.DataFrame(data=feats, columns=['j2_bond_angle_cos', 'j3_torsion_angle_cos'])
+
+        if save_dir is not None:
+            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
+
 if __name__ == '__main__':
+    # expand_dataset('./data')
+    topology_features(save_dir='features', prefix='simple_angles_cos')
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
-    calc_CM_pair_features(max_terms=15, save_dir='features', save_name_prefix='cm_unsorted_maxterms_15')
+    # calc_CM_pair_features(max_terms=15, save_dir='features', save_name_prefix='cm_unsorted_maxterms_15')
 
 
 

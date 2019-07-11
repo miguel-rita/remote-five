@@ -33,6 +33,8 @@ def feval_func(preds, train_data):
 # Load dataset
 feature_sets = [
     'cm_unsorted_maxterms_15',
+    'simple_angles',
+    'simple_angles_cos',
 ]
 
 x_train, x_test, y_tgt = prepare_datasets(
@@ -53,7 +55,7 @@ lgbm_model = LgbmModel()
 
 fit = bool(0)
 sub = bool(1)
-model_name = 'v3'
+model_name = 'v5'
 
 if fit:
     lgbm_model.fit(
@@ -72,7 +74,7 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':100000,
+            'num_boost_round':25000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },

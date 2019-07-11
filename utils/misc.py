@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import glob, os
+import glob, os, pickle, tqdm
 
 def save_feature_importance(feature_importance_df, num_feats, relative_save_path=None):
     '''
@@ -65,7 +65,7 @@ def expand_dataset(path_to_csv_dataset):
 
     print('TODO')
 
-def parse_obabel_reports(reports_dir):
+def parse_obabel_reports(reports_dir, save_path=None):
     '''
     Parse obabel reports in dir into a dict.
     Dict keys will be molecule codes.
@@ -73,12 +73,14 @@ def parse_obabel_reports(reports_dir):
         'bond_angles': 2d np array, for each triplet (line) :[atom_number_0, atom_number_1, atom_number_2, bond_angle]
         'torsion_angles': 2d np array, for each quadruplet (line) :[atom_number_0, atom_number_1, atom_number_2, atom_number_3, torsion_angle]
     :param reports_dir:
+    :param save_path: str
+        If specified pickle dict as 'save_path'
     :return:
     '''
 
     rep_dict = {}
     rep_dirs = glob.glob(reports_dir + '/*.report')
-    for rd in rep_dirs:
+    for rd in tqdm.tqdm(rep_dirs, total=len(rep_dirs)):
         mol_name = rd.split('/')[-1].split('.')[0]
         with open(rd, mode='r') as rep:
 
@@ -112,6 +114,17 @@ def parse_obabel_reports(reports_dir):
                 'torsion_angles' : torsion_array,
             }
 
-    return 1
+    if save_path is not None:
+        with open(save_path, 'wb') as h:
+            pickle.dump(rep_dict, h)
 
-parse_obabel_reports('data/structures_report_sample')
+    return rep_dict
+
+def main():
+    parse_obabel_reports(
+        reports_dir='../data/structures_report',
+        save_path='../data/aux/rep_dict.pkl'
+    )
+
+if __name__ == '__main__':
+    main()
