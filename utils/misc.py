@@ -65,6 +65,21 @@ def expand_dataset(path_to_csv_dataset):
 
     print('TODO')
 
+def build_struct_dict(save_path):
+    '''
+    Store structures df in dictionary format for faster access
+    :return: 
+    '''
+    struct = pd.read_csv('../data/structures.csv')
+    mols = struct['molecule_name'].unique()
+    struct_dict = {}
+    gb = struct.groupby('molecule_name')
+    for mol in tqdm.tqdm(mols, total=len(mols)):
+        struct_dict[mol] = gb.get_group(mol).loc[:, ['atom_index', 'atom', 'x', 'y', 'z']].reset_index(drop=True)
+    if save_path is not None:
+        with open(save_path, 'wb') as h:
+            pickle.dump(struct_dict, h)
+
 def parse_obabel_reports(reports_dir, save_path=None):
     '''
     Parse obabel reports in dir into a dict.
@@ -121,10 +136,11 @@ def parse_obabel_reports(reports_dir, save_path=None):
     return rep_dict
 
 def main():
-    parse_obabel_reports(
-        reports_dir='../data/structures_report',
-        save_path='../data/aux/rep_dict.pkl'
-    )
+    # parse_obabel_reports(
+    #     reports_dir='../data/reports',
+    #     save_path='../data/aux/rep_dict.pkl'
+    # )
+    build_struct_dict('../data/aux/struct_dict.pkl')
 
 if __name__ == '__main__':
     main()

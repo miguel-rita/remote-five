@@ -2,7 +2,6 @@ import glob, tqdm, pickle
 import numpy as np
 import pandas as pd
 import qml
-import cProfile
 
 def inv_tri(cm_tri, size):
     '''
@@ -100,7 +99,6 @@ def expand_dataset(save_path=None):
 
     # Load train/test datasets, as well as struct info
     train, test = pd.read_csv('data/train.csv'), pd.read_csv('data/test.csv')
-    struct = pd.read_csv('data/structures.csv')
 
     # Load report dict
     with open(f'data/aux/rep_dict.pkl', 'rb') as h:
@@ -178,10 +176,11 @@ def expand_dataset(save_path=None):
         if save_path is not None:
             expand_df.to_hdf(save_path + '/' + f'{name}_expanded.h5', key='none', mode='w')
 
-def topology_features(save_dir, prefix):
+def angle_features(save_dir, prefix):
     train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf('data/test_expanded.h5', mode='r')
 
     angles = ['j2_bond_angle', 'j3_torsion_angle']
+
     for name, df in zip(['train', 'test'], [train_extended, test_extended]):
 
         feats = np.vstack([np.cos(df[col]) for col in angles]).T
@@ -190,9 +189,48 @@ def topology_features(save_dir, prefix):
         if save_dir is not None:
             new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
 
+def distance_features(save_dir, prefix):
+    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf(
+        'data/test_expanded.h5', mode='r')
+    struct = pd.read_csv('data/structures.csv')
+
+    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
+
+        def map_atom_info(df, atom_ix):
+            df = pd.merge(
+                df, struct, how='left',
+                left_on=['molecule_name', f'atom_index_{atom_ix:d}'],
+                right_on=['molecule_name', f'atom_index'],
+            )
+            df = df.drop('atom_index', axis=1)
+            df = df.rename(
+                columns={
+                    'atom' : f'atom_{atom_ix:d}',
+                    'x' : f'x_{atom_ix}',
+                    'y' : f'y_{atom_ix}',
+                    'z' : f'z_{atom_ix}',
+                }
+            )
+            return df
+            new_feats = np.vstack(np.hstack(pos0_acc), np.hstack(pos1_acc)).T
+
+        df = map_atom_info(df, 0)
+        df = map_atom_info(df, 1)
+
+        df_p_0 = df[['x_0', 'y_0', 'z_0']].values
+        df_p_1 = df[['x_1', 'y_1', 'z_1']].values
+
+        dist = np.linalg.norm(df_p_0 - df_p_1, axis=1)
+
+        new_feats = pd.DataFrame(data=dist, columns=['dist'])
+
+        if save_dir is not None:
+            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
+
 if __name__ == '__main__':
     # expand_dataset('./data')
-    topology_features(save_dir='features', prefix='simple_angles_cos')
+    # angle_features(save_dir='features', prefix='simple_angles_cos')
+    distance_features(save_dir='features', prefix='simple_distance')
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
     # calc_CM_pair_features(max_terms=15, save_dir='features', save_name_prefix='cm_unsorted_maxterms_15')
 

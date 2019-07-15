@@ -33,8 +33,8 @@ def feval_func(preds, train_data):
 # Load dataset
 feature_sets = [
     'cm_unsorted_maxterms_15',
-    'simple_angles',
     'simple_angles_cos',
+    'simple_distance',
 ]
 
 x_train, x_test, y_tgt = prepare_datasets(
@@ -55,7 +55,7 @@ lgbm_model = LgbmModel()
 
 fit = bool(0)
 sub = bool(1)
-model_name = 'v5'
+model_name = 'v6'
 
 if fit:
     lgbm_model.fit(
@@ -74,7 +74,7 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':25000,
+            'num_boost_round':10000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },
@@ -86,7 +86,7 @@ if fit:
         random_seed=42
     )
 else:
-    model_dir = 'models/v3_-0.50_2019-07-08 20:20:13'
+    model_dir = 'models/v6_-0.53_2019-07-14 22:22:08'
     ts = model_dir.split('/')[-1]
     metric_val = re.search('_.?\d\.\d\d_', model_dir).group()
     lgbm_model.load(model_dir)
