@@ -183,8 +183,8 @@ def angle_features(save_dir, prefix):
 
     for name, df in zip(['train', 'test'], [train_extended, test_extended]):
 
-        feats = np.vstack([np.cos(df[col]) for col in angles]).T
-        new_feats = pd.DataFrame(data=feats, columns=['j2_bond_angle_cos', 'j3_torsion_angle_cos'])
+        feats = np.vstack([np.array(df[col]) for col in angles] + [np.cos(df[col]) for col in angles]).T
+        new_feats = pd.DataFrame(data=feats, columns=['j2_bond_angle', 'j3_torsion_angle', 'j2_bond_angle_cos', 'j3_torsion_angle_cos'])
 
         if save_dir is not None:
             new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
@@ -212,7 +212,6 @@ def distance_features(save_dir, prefix):
                 }
             )
             return df
-            new_feats = np.vstack(np.hstack(pos0_acc), np.hstack(pos1_acc)).T
 
         df = map_atom_info(df, 0)
         df = map_atom_info(df, 1)
@@ -222,17 +221,26 @@ def distance_features(save_dir, prefix):
 
         dist = np.linalg.norm(df_p_0 - df_p_1, axis=1)
 
-        new_feats = pd.DataFrame(data=dist, columns=['dist'])
+        dist = np.vstack(
+            [
+                dist,
+                1/dist,
+                1/dist**2,
+                1/dist**3,
+            ]
+        ).T
+
+        new_feats = pd.DataFrame(data=dist, columns=['dist', 'inv_dist', 'inv_dist_2', 'inv_dist_3'])
 
         if save_dir is not None:
             new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
 
 if __name__ == '__main__':
     # expand_dataset('./data')
-    # angle_features(save_dir='features', prefix='simple_angles_cos')
-    distance_features(save_dir='features', prefix='simple_distance')
+    # angle_features(save_dir='features', prefix='angle_feats')
+    # distance_features(save_dir='features', prefix='simple_distance_v2')
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
-    # calc_CM_pair_features(max_terms=15, save_dir='features', save_name_prefix='cm_unsorted_maxterms_15')
+    calc_CM_pair_features(max_terms=28, save_dir='features', save_name_prefix='cm_unsorted_maxterms_28')
 
 
 

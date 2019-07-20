@@ -33,7 +33,7 @@ def feval_func(preds, train_data):
 # Load dataset
 feature_sets = [
     'cm_unsorted_maxterms_15',
-    'simple_angles_cos',
+    'angle_feats',
     'simple_distance',
 ]
 
@@ -43,7 +43,8 @@ x_train, x_test, y_tgt = prepare_datasets(
 )
 
 # Select features
-blacklist = ['id', 'molecule_name', 'atom_index_0', 'atom_index_1']
+blacklist = ['id', 'molecule_name', 'atom_index_0', 'atom_index_1',]# 'j3_torsion_angle_cos', 'j2_bond_angle_cos',
+             # 'sorted_CM_7_atom_0', 'sorted_CM_7_atom_1', 'sorted_CM_8_atom_0', 'sorted_CM_8_atom_1']
 x_train.drop([c for c in x_train.columns if c in blacklist], inplace=True, axis=1)
 x_test.drop([c for c in x_test.columns if c in blacklist], inplace=True, axis=1)
 
@@ -55,7 +56,7 @@ lgbm_model = LgbmModel()
 
 fit = bool(0)
 sub = bool(1)
-model_name = 'v6'
+model_name = 'v200k'
 
 if fit:
     lgbm_model.fit(
@@ -74,7 +75,7 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':10000,
+            'num_boost_round':200000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },
@@ -86,7 +87,7 @@ if fit:
         random_seed=42
     )
 else:
-    model_dir = 'models/v6_-0.53_2019-07-14 22:22:08'
+    model_dir = 'models/v200k_-0.90_2019-07-17 06:36:19'
     ts = model_dir.split('/')[-1]
     metric_val = re.search('_.?\d\.\d\d_', model_dir).group()
     lgbm_model.load(model_dir)
