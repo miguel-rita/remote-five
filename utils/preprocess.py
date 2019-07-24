@@ -1,15 +1,18 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import StratifiedKFold
 
-def prepare_datasets(feature_sets, augment_dataset):
+def prepare_datasets(feature_sets, augment_dataset, subsample_frac=None):
     '''
     Prepare train, test datasets as well as target vector
 
     :param feature_sets: list of str
         List of datasets to load excluding the _train or _test suffix
     :param augment_dataset: bool
-        Swap atom pair indexes to duplicate featur
+        Swap atom pair indexes to duplicate features
+    :param subsample_frac: float
+        Train on a fraction of train data
     :return: pandas df (train), pandas df (test), np 1D array (target)
     '''
 
@@ -36,7 +39,17 @@ def prepare_datasets(feature_sets, augment_dataset):
         train = pd.concat([train, train_swapped], axis=0, ignore_index=True, sort=False)
 
     # Isolate target
-    target = train.loc[:, 'scalar_coupling_constant']
+    target = train.loc[:, 'scalar_coupling_constant'].values
     train.drop(['scalar_coupling_constant'], axis=1, inplace=True)
+
+    if subsample_frac is not None:
+        for _, subsample_ixs in StratifiedKFold(
+            n_splits=int(1/subsample_frac),
+            random_state=42,
+            shuffle=True,
+        ).split(X=train, y=train.loc[:, 'type'].values):
+            train = train.iloc[subsample_ixs, :]
+            target = target[subsample_ixs]
+            break
 
     return train, test, target

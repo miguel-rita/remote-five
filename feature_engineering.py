@@ -2,6 +2,8 @@ import glob, tqdm, pickle
 import numpy as np
 import pandas as pd
 import qml
+from dscribe.descriptors import ACSF
+from ase.io import read
 
 def inv_tri(cm_tri, size):
     '''
@@ -103,7 +105,7 @@ def expand_dataset(save_path=None):
     # Load report dict
     with open(f'data/aux/rep_dict.pkl', 'rb') as h:
         rep_dict = pickle.load(h)
-    
+
     for name, df in zip(['train', 'test'], [train, test]):
         expand_df = df.copy()#.iloc[:10000, :]
 
@@ -235,12 +237,132 @@ def distance_features(save_dir, prefix):
         if save_dir is not None:
             new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
 
+def compute_acsf_descriptors(prefix, rcutoffs):
+
+    species = ['H', 'C', 'N', 'O', 'F']
+    g2_params = [
+        [1, 0],
+        [1, 1],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [4, 1],
+        [4, 2],
+        [4, 3],
+        [4, 4],
+    ]
+    g4_params = [
+        [1, 1, 1],
+        [1, 4, 1],
+        [1, 8, 1],
+        [1, 16, 1],
+        [1, 32, 1],
+        [1, 64, 1],
+        [1, 1, -1],
+        [1, 4, -1],
+        [1, 8, -1],
+        [1, 16, -1],
+        [1, 32, -1],
+        [1, 64, -1],
+    ]
+    g5_params = [
+        [1, 1, 1],
+        [1, 4, 1],
+        [1, 8, 1],
+        [1, 16, 1],
+        [1, 32, 1],
+        [1, 64, 1],
+        [1, 1, -1],
+        [1, 4, -1],
+        [1, 8, -1],
+        [1, 16, -1],
+        [1, 32, -1],
+        [1, 64, -1],
+    ]
+    featnames = ['g1'] +\
+                [f'g2_{i:d}' for i in range(len(g2_params))] +\
+                [f'g4_{i:d}' for i in range(len(g4_params) * 3)] +\
+                [f'g5_{i:d}' for i in range(len(g5_params) * 3)]
+
+    col_names = []
+    for s in species:
+        col_names.extend(
+            [f'{s}_{fn}' for fn in featnames]
+        )
+
+    # Set up ACSF descriptor
+    acsf = ACSF(
+        g2_params=g2_params,
+        g4_params=g4_params,
+        g5_params=g5_params,
+        species=species,
+        rcut=rcutoffs[0],
+    )
+
+    # Read mol info
+    xyz_files = glob.glob('data/structures/*.xyz')
+    mols = []
+    for xyz_file in tqdm.tqdm(xyz_files, total=len(xyz_files)):
+        mol = read(xyz_file, format='xyz')
+        # print(mol.get_atomic_numbers())
+        mols.append(mol)
+
+    # Create ACSF output for all mols
+    acsf_mol = acsf.create(mols, positions=None)
+
+    # Save ACSF descriptors
+    pd.DataFrame(
+        data=acsf_mol, columns=col_names
+    ).to_hdf(f'data/descriptors/{prefix}.h5', key='acsf', mode='w')
+
+def compute_acsf_features(acsf_file, save_dir, prefix):
+
+    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf(
+        'data/test_expanded.h5', mode='r')
+    struct = pd.read_csv('data/structures.csv')
+    acsf = pd.read_hdf(f'data/descriptors/{acsf_file}.h5')
+    acsf_cols = list(acsf.columns)
+    acsf = pd.concat([struct, acsf], axis=1)
+
+    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
+
+        def map_atom_info(df, atom_ix):
+            df = pd.merge(
+                df, acsf, how='left',
+                left_on=['molecule_name', f'atom_index_{atom_ix:d}'],
+                right_on=['molecule_name', f'atom_index'],
+            )
+            df = df.drop('atom_index', axis=1)
+
+            new_names = {cname: f'a{atom_ix:d}_{cname}' for cname in acsf_cols}
+            new_names['atom'] = f'atom_{atom_ix:d}'
+            df = df.rename(
+                columns=new_names
+            )
+
+            return df
+
+        print('merge 0...')
+        df = map_atom_info(df, 0)
+        print('merge 1...')
+        df = map_atom_info(df, 1)
+
+        new_feat_cols = [f'a0_{cname}' for cname in acsf_cols] + [f'a1_{cname}' for cname in acsf_cols]
+        new_feats = df.loc[:, new_feat_cols]
+
+        if save_dir is not None:
+            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
+
 if __name__ == '__main__':
     # expand_dataset('./data')
     # angle_features(save_dir='features', prefix='angle_feats')
     # distance_features(save_dir='features', prefix='simple_distance_v2')
+    for r in [2,4,6,8,10]:
+        name=f'g2_g4_g5_v3_r{r:d}'
+        compute_acsf_descriptors(prefix=name, rcutoffs=[r])
+        compute_acsf_features(acsf_file=name, save_dir='features', prefix=name)
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
-    calc_CM_pair_features(max_terms=28, save_dir='features', save_name_prefix='cm_unsorted_maxterms_28')
+    # calc_CM_pair_features(max_terms=5, save_dir='features', save_name_prefix='cm_unsorted_maxterms_5')
 
 
 

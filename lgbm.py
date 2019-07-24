@@ -26,6 +26,14 @@ class LgbmModel:
         ):
             self.fold_info.append((fold_num, train_ix, val_ix))
 
+        if save_model:
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
+            full_model_name = f'{model_name}_{timestamp}'
+            print('> lgbm : Creating save dir . . .')
+            model_dir = f'models/{full_model_name}'
+            if not os.path.exists(model_dir):
+                os.makedirs(f'models/{full_model_name}')
+
         # Train one booster per fold
         for fold_num, train_ix, val_ix in self.fold_info:
 
@@ -63,6 +71,15 @@ class LgbmModel:
             fold_metrics.append(oof_metric)
             print(f'> lgbm : Fold metric : {oof_metric:.4f}')
 
+            if save_model:
+                print('> lgbm : Saving fold booster . . .')
+
+                # Save fold info
+                with open(f'{model_dir}/fold_info.pkl', 'wb') as h:
+                    pickle.dump(self.fold_info, h)
+
+                bst.save_model(f'{model_dir}/bst_{fold_num:d}_metric_{oof_metric:.4f}.bst')
+
             # Feature importances
             if save_feat_importances:
                 fold_importance_df = pd.DataFrame()
@@ -73,25 +90,6 @@ class LgbmModel:
 
         print('> lgbm : CV results :')
         print(pd.Series(fold_metrics).describe())
-
-        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
-        full_model_name = f'{model_name}_{np.mean(fold_metrics):.2f}_{timestamp}'
-
-        if save_model:
-            print('> lgbm : Saving boosters . . .')
-            model_dir = f'models/{full_model_name}'
-            if not os.path.exists(model_dir):
-                os.makedirs(f'models/{full_model_name}')
-
-            # Save fold info
-            with open(f'{model_dir}/fold_info.pkl', 'wb') as h:
-                pickle.dump(self.fold_info, h)
-
-            # Save boosters
-            for i, bst in enumerate(self.bsts):
-                bst.save_model(f'{model_dir}/bst_{i:d}_metric_{fold_metrics[i]:.4f}.bst')
-
-            print('> lgbm : . . . done saving boosters.')
 
         if save_feat_importances: # After saving boosters, to prevent unknown interaction between mpl and lgbm
             save_feature_importance(
@@ -119,7 +117,7 @@ class LgbmModel:
 
     def predict(self, dataset, is_train):
         '''
-        Predicts using boosters from all folds.
+        Predicts using boosters from all folds. If predict sub, may use less than all available folds
 
         :param dataset: pandas df
             Train or test dataset
@@ -131,9 +129,11 @@ class LgbmModel:
 
         if not self.bsts:
             raise AssertionError('No trained lgbm boosters found. Fit or load boosters before predicting.')
+        else:
+            print(f'> lgbm : Found {len(self.bsts):d} boosters.')
 
         y_oof = np.zeros(dataset.shape[0])
-        y_test_preds = np.zeros((dataset.shape[0], len(self.fold_info)))
+        y_test_preds = np.zeros((dataset.shape[0], len(self.bsts)))
 
         for (fold_num, train_ixs, val_ixs), bst in zip(self.fold_info, self.bsts):
             print(f'> lgbm : Predicting fold number {fold_num} . . .')
