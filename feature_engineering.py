@@ -358,6 +358,7 @@ if __name__ == '__main__':
     # angle_features(save_dir='features', prefix='angle_feats')
     # distance_features(save_dir='features', prefix='simple_distance_v2')
     for r in [2,4,6,8,10]:
+        print(r)
         name=f'g2_g4_g5_v3_r{r:d}'
         compute_acsf_descriptors(prefix=name, rcutoffs=[r])
         compute_acsf_features(acsf_file=name, save_dir='features', prefix=name)

@@ -11,15 +11,39 @@ class LgbmModel:
         self.bsts = [] # Boosters for each fold
         self.fold_info = [] # List of tuples of form (fold_num, train_ixs, val_ixs)
 
-    def fit(self, train, y_tgt, params, run_params, metric, model_name, save_model, save_feat_importances, random_seed, feval=None):
+    def fit(self, train, y_tgt, params, run_params, nfolds, nfolds_to_run, metric, model_name, save_model, save_feat_importances, random_seed, feval=None):
+
+        '''
+        Fit lgbm booster using CV
+
+        :param train:
+        :param y_tgt:
+        :param params:
+        :param run_params:
+        :param nfolds: int
+            Number of CV folds
+        :param nfolds_to_run:
+            Number of CV folds to compute
+        :param metric:
+        :param model_name:
+        :param save_model:
+        :param save_feat_importances:
+        :param random_seed:
+        :param feval:
+        :return:
+        '''
+
+        if nfolds_to_run is None:
+            nfolds_to_run = nfolds
+
         # Setup CV folds
         fold_metrics = []
         feature_importance_df = pd.DataFrame()
         y_oof = np.zeros(y_tgt.size, dtype=np.float32)
-        num_folds = 3
+
         for fold_num, (train_ix, val_ix) in enumerate(
             StratifiedKFold(
-                n_splits=num_folds,
+                n_splits=nfolds,
                 random_state=random_seed,
                 shuffle=True,
             ).split(X=train, y=train.loc[:,'type'].values)
@@ -37,7 +61,11 @@ class LgbmModel:
         # Train one booster per fold
         for fold_num, train_ix, val_ix in self.fold_info:
 
-            print(f'> lgbm : Computing fold number {fold_num} . . .')
+            if fold_num + 1 > nfolds_to_run:
+                print(f'> lgbm: Done training only {nfolds_to_run} fold(s).')
+                break
+
+            print(f'> lgbm : Training on fold number {fold_num} . . .')
 
             x_train_fold = train.iloc[train_ix, :]
             x_val_fold = train.iloc[val_ix, :]

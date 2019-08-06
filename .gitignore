@@ -5,6 +5,7 @@ models/*
 subs/*
 importances/*
 utils/__*
+docs/*
 __**
 /**/__*
 /**/.*

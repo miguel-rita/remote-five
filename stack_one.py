@@ -33,11 +33,11 @@ def feval_func(preds, train_data):
 # Load dataset
 feature_sets = [
     # 'cm_unsorted_maxterms_5',
-    'cm_unsorted_maxterms_15',
+    # 'cm_unsorted_maxterms_15',
     'angle_feats',
     'simple_distance',
-    # 'acsf_v1',
-    'acsf_v2',
+    'acsf_v1',
+    # 'acsf_v2',
 ]
 
 x_train, x_test, y_tgt = prepare_datasets(
@@ -60,7 +60,7 @@ lgbm_model = LgbmModel()
 
 fit = bool(1)
 sub = bool(1)
-model_name = 'v2_200leaves_20minleaves'
+model_name = 'v3'
 
 if fit:
     lgbm_model.fit(
@@ -70,7 +70,7 @@ if fit:
             'objective': 'regression_l1',
             # 'metric': 'None',
             'boosting': 'gbdt',
-            'num_leaves': 200,
+            'num_leaves': 31,
             'min_data_in_leaf': 20,
             'feature_fraction': 1.0,
             'bagging_fraction': 1.0,
@@ -79,10 +79,12 @@ if fit:
             'verbose': 1,
         },
         run_params={
-            'num_boost_round':1000,
+            'num_boost_round':10000,
             'early_stopping_rounds':100,
             'verbose_eval':100,
         },
+        nfolds=5,
+        nfolds_to_run=1,
         model_name=model_name,
         save_model=True,
         metric=bmae,
