@@ -3,6 +3,25 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import glob, os, pickle, tqdm
 
+def find_line(line, arr, accept_reverse=True):
+    l = list(np.argwhere(np.equal(arr,line).all(axis=1))[:,0])
+    if accept_reverse:
+        l.extend(np.argwhere(np.equal(arr,line[::-1]).all(axis=1))[:,0])
+    return l
+
+def get_gps_feature_cols(n_atoms, include_redundant=False):
+    if include_redundant:
+        base_ds = []
+        for i in np.arange(4):
+            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)])
+    else:
+        base_ds = ['d0_1', 'd0_2', 'd0_3', 'd1_2', 'd1_3', 'd2_3']
+    if n_atoms >= 4:
+        for i in np.arange(4, n_atoms):
+            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)])
+    return base_ds
+
+
 def save_feature_importance(feature_importance_df, num_feats, relative_save_path=None):
     '''
     Save feature importance .png from computed fold feature importances

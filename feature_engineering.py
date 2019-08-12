@@ -1,370 +1,544 @@
-import glob, tqdm, pickle
 import numpy as np
 import pandas as pd
-import qml
-from dscribe.descriptors import ACSF
-from ase.io import read
+import tqdm, gc
+from numba import jit
+from openbabel import *
+from pybel import readfile
+from utils.misc import get_gps_feature_cols, find_line
+from utils.numba_utils import numba_ring_mat_feats, numba_fill_paths
 
-def inv_tri(cm_tri, size):
+def gen_lookups(df, gb_col):
     '''
-    Rebuild full matrix from concated upper triangle vector in
-    fortran column-wise order
-
-    :param cm_tri: flattened vector
-    :param size: square matrix size
-    :return:
+    return a cumsum array starting at 0 and a dict to map gb_col to its positions
     '''
-    cm_tri = cm_tri[::-1]
-    cm = np.zeros((size, size))
-    for i in range(size):
-        cm[:i + 1, i] = cm_tri[-(i + 1):][::-1]
-        cm_tri = np.roll(cm_tri, i + 1)
-    cm += np.triu(cm, k=1).T
-    return cm
+    ss = df.groupby(gb_col).size().cumsum()
+    ssx = np.zeros(len(ss)+1).astype(int)
+    ssx[1:] = ss.values
+    ssdict = {}
+    for i, col in enumerate(ss.index):
+        ssdict[col] = i
+    return ssx, ssdict
 
-def calc_coloumb_matrices(size, save_path=None):
+@jit(nopython=True)
+def numba_dist_matrix(mol_xyz):
     '''
-    Return dict of CMs for each molecule in both train and test sets
-
-    :param size: int
-        Max num of atoms per molecule found in datasets
-    :param save_path: str
-        If provided will pickle computed CMs to save_path
-    :return: Dict of 2D numpy arrays
-        Dict where keys are molecule_names, values are 2d CMs
+    Credit @CPMP
     '''
+    # return locs
+    num_atoms = mol_xyz.shape[0]
+    dmat = np.zeros((num_atoms, num_atoms))
+    for i in range(num_atoms):
+        for j in range(i + 1, num_atoms):
+            d = np.sqrt((mol_xyz[i, 0] - mol_xyz[j, 0]) ** 2 + (mol_xyz[i, 1] - mol_xyz[j, 1]) ** 2 + (
+                    mol_xyz[i, 2] - mol_xyz[j, 2]) ** 2)
+            dmat[i, j] = d
+            dmat[j, i] = d
+    return dmat
 
-    CMs = {}
-    for file in tqdm.tqdm(glob.glob('./data/structures/*.xyz')):
-        mol_name = file.split('/')[-1].split('.')[0]
-        mol = qml.Compound(xyz=file)
 
-        # After experiments, seems upper triangle CM was concated in fortran-order
-        mol.generate_coulomb_matrix(size=size, sorting='unsorted')
-        cm_tri = mol.representation
-        cm = inv_tri(cm_tri, size=size)
+@jit(nopython=True)
+def numba_gps_features(xyz, pairs, n_feat_atoms):
+    N_PAIRS = pairs.shape[0]  # Number of scalar coupling pairs for this molecule
+    N_CORE_ATOMS = 4  # Number of core atoms to serve as representation basis
+    N_ATOMS = xyz.shape[0]  # Number of atoms in molecule
 
-        # Concat to dict
-        CMs[mol_name] = cm
+    dist_mat = numba_dist_matrix(xyz)
 
-    if save_path is not None:
-        with open(save_path, 'wb') as h:
-            pickle.dump(CMs, h, protocol=pickle.HIGHEST_PROTOCOL)
+    gps_feats = np.empty((N_PAIRS, N_CORE_ATOMS * n_feat_atoms)).astype(np.float32)
+    gps_feats.fill(np.nan)  # Placeholder
+    for i in range(N_PAIRS):
 
-    return CMs
+        # Determine distance to pair center for all molecule atoms
+        a0 = pairs[i, 0]
+        a1 = pairs[i, 1]
+        center = (xyz[a0, :] + xyz[a1, :]) * 0.5
+        square_ds_to_center = np.empty(N_ATOMS).astype(np.float32)
+        square_ds_to_center.fill(np.nan)
 
-def calc_CM_pair_features(max_terms, save_dir=None, save_name_prefix=None):
-    '''
-    First iteration of CM features
+        for j in range(N_ATOMS):
+            square_ds_to_center[j] = (xyz[j, 0] - center[0]) ** 2.0 + (xyz[j, 1] - center[1]) ** 2.0 + (
+                    xyz[j, 2] - center[2]) ** 2.0
 
-    :param max_terms: int
-        Max CM interactions to keep per atom. Max 28 terms, since we have 29 atoms at most
-    '''
+        # Get argsort
+        asort_ds_to_center = np.argsort(square_ds_to_center)
+
+        # Get core atom indexes
+        feat_atoms = [a0, a1]
+        for aix in asort_ds_to_center:
+            if aix != a0 and aix != a1:
+                feat_atoms.append(aix)
+            if len(feat_atoms) == min(n_feat_atoms, N_ATOMS):
+                break
+        core_atoms = feat_atoms[:min(N_CORE_ATOMS, N_ATOMS)]
+        # At this stage for 3 atom molecules core_atoms has len() 3, but no problem since our feat array is initialized with np.nan by default
+
+        for s in range(min(n_feat_atoms, N_ATOMS)):
+            feat_atom_ix = feat_atoms[s]
+            for t in range(min(N_CORE_ATOMS, N_ATOMS)):
+                core_atom_ix = core_atoms[t]
+                gps_feats[i, s * N_CORE_ATOMS + t] = dist_mat[feat_atom_ix, core_atom_ix]
+
+    return gps_feats
+
+@jit(nopython=True)
+def numba_cyl_features(xyz, pairs, rs):
+    N_PAIRS = pairs.shape[0]  # Number of scalar coupling pairs for this molecule
+    N_ATOMS = xyz.shape[0]  # Number of atoms in molecule
+    N_RS = rs.shape[0] # Number of radius thresholds
+
+    dist_mat = numba_dist_matrix(xyz)
+
+    out = np.zeros((N_PAIRS, N_RS))
+    for j in range(N_RS):
+
+        r = rs[j]
+
+        for i in range(N_PAIRS):
+            a = pairs[i, 0]
+            b = pairs[i, 1]
+            ab = xyz[b,:] - xyz[a,:]
+            nab = dist_mat[a,b]
+
+            ct = 0 # counter for atoms inside cylinder
+            for k in range(N_ATOMS):
+
+                if k==a or k==b:
+                    continue
+
+                ak = xyz[k,:] - xyz[a,:]
+                bk = xyz[k,:] - xyz[b,:]
+                nak = dist_mat[a, k]
+                nbk = dist_mat[b, k]
+
+                # Check if k atom not behind atoms
+                cosa = ab.dot(ak) / (nab * nak)
+                cosb = bk.dot(-ab) / (nab * nbk)
+
+                if (cosa >= 0) & (cosb >= 0): # k atom is valid. lets check ortho dist to cylinder axis
+                    d = np.sqrt(nak**2 * (1 - cosa**2))
+                    if d <= r:
+                        ct += 1
+
+            out[i, j] = ct
+
+    return out
+
+def test_cyl():
+    xyz = np.array([
+        [0,0,0],
+        [0,1,0],
+        [0,1,1],
+        [0,1,2],
+        [0,2,0],
+        [0,3,1],
+        [0,-1,1],
+    ]).astype(float)
+    pairs = np.array([
+        [0, 4],
+        [1, 3],
+        [2, 5],
+    ])
+    rs = np.array([0.5, 1.5, 5])
+    print(numba_cyl_features(xyz, pairs, rs))
+
+@jit(nopython=True)
+def numba_experimental_features(xyz, pairs):
+    N_ATOMS = xyz.shape[0]  # Number of atoms in molecule
+    N_PAIRS = pairs.shape[0]  # Number of scalar coupling pairs for this molecule
+
+    # dist_mat = numba_dist_matrix(xyz)
+
+    exp_feats = np.empty((N_PAIRS, 1)).astype(np.float32)
+    exp_feats.fill(np.nan)  # Placeholder
+
+    exp_feats[:, :] = N_ATOMS
+
+    return exp_feats
+
+def gps_standard_features(max_num_feat_atoms, save_dir, prefix):
 
     # Load data
-    train, test = pd.read_csv('./data/train.csv'), pd.read_csv('./data/test.csv')
-    with open('data/descriptors/CMs_unsorted.pkl', 'rb') as h:
-        CMs = pickle.load(h)
+    structures = pd.read_csv('data/structures.csv')
+    train = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
 
-    # Placeholders for new feature values
-    new_feats = (np.zeros((train.shape[0], max_terms*2)), np.zeros((test.shape[0], max_terms*2)))
+    # Fast lookups
+    xyz_ssx, xyz_dict = gen_lookups(structures, 'molecule_name')
+    train_ssx, train_dict = gen_lookups(train, 'molecule_name')
+    test_ssx, test_dict = gen_lookups(test, 'molecule_name')
 
-    for j, df in enumerate([train, test]):
+    # Numpy data
+    xyz = structures[['x', 'y', 'z']].values.astype(np.float32)
+    train_pairs = train[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    train_types = train[['type']].values
+    test_pairs = test[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    test_types = test[['type']].values
 
-        # For each entry
-        for i,line in tqdm.tqdm(enumerate(df.values), total=df.shape[0]):
-            mol_name, index_0, index_1 = str(line[1]), int(line[2]), int(line[3])
-            cm = CMs[mol_name]
+    # For train and test
+    for df_name, df, df_pairs, df_types, df_ssx, df_dict in zip(
+            ['train', 'test'],
+            [train, test],
+            [train_pairs, test_pairs],
+            [train_types, test_types],
+            [train_ssx, test_ssx],
+            [train_dict, test_dict],
+    ):
+        print(f'{df_name} feature engineering ...')
 
-            # Grab the two relevant CM lines as feature
-            line_0 = np.sort(cm[index_0, :])[::-1][:max_terms]
-            line_1 = np.sort(cm[index_1, :])[::-1][:max_terms]
-            new_feats[j][i, :] = np.hstack([line_0, line_1])
+        # For each molecule
+        feats = []
+        unique_mols = df['molecule_name'].unique()
+        for mol in tqdm.tqdm(unique_mols, total=unique_mols.shape[0]):
 
-    feat_names = [f'sorted_CM_{n:d}_atom_0' for n in range(max_terms)] +\
-                 [f'sorted_CM_{n:d}_atom_1' for n in range(max_terms)]
+            mol_ix = xyz_dict[mol]
+            mol_pairs_ix = df_dict[mol]
+            mol_xyz = xyz[xyz_ssx[mol_ix]:xyz_ssx[mol_ix + 1], :]
+            mol_pairs = df_pairs[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
+            mol_types = df_types[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
 
-    if save_dir is not None:
-        pd.DataFrame(data=new_feats[0], columns=feat_names).to_hdf(f'{save_dir}/{save_name_prefix}_train.h5', key='df', mode='w')
-        pd.DataFrame(data=new_feats[1], columns=feat_names).to_hdf(f'{save_dir}/{save_name_prefix}_test.h5', key='df', mode='w')
+            # Core calculations
+            gps_feats = numba_gps_features(mol_xyz, mol_pairs, max_num_feat_atoms)
+            # experimental_feats = numba_experimental_features(mol_xyz, mol_pairs)
 
-def expand_dataset(save_path=None):
-    '''
-    Add features and info to original train/test dataframes
+            feats.append(np.hstack([
+                gps_feats,
+                # experimental_feats,
+            ]))
 
-    :param save_path: where to save expanded dataset if provided
-    :return:
-    '''
+        # Define feature names and save to disk
+        feat_names = get_gps_feature_cols(max_num_feat_atoms, include_redundant=True)
+        pd.DataFrame(
+            data=np.vstack(feats),
+            columns=feat_names,
+            dtype=np.float32,
+        ).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
 
-    # If more than 1 path possible for J coupling, pick p'th path
-    p = 0
+def cyl_standard_features(radii, save_dir, prefix):
 
-    # Load train/test datasets, as well as struct info
-    train, test = pd.read_csv('data/train.csv'), pd.read_csv('data/test.csv')
+    # Load data
+    structures = pd.read_csv('data/structures.csv')
+    train = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
 
-    # Load report dict
-    with open(f'data/aux/rep_dict.pkl', 'rb') as h:
-        rep_dict = pickle.load(h)
+    # Fast lookups
+    xyz_ssx, xyz_dict = gen_lookups(structures, 'molecule_name')
+    train_ssx, train_dict = gen_lookups(train, 'molecule_name')
+    test_ssx, test_dict = gen_lookups(test, 'molecule_name')
 
-    for name, df in zip(['train', 'test'], [train, test]):
-        expand_df = df.copy()#.iloc[:10000, :]
+    # Numpy data
+    xyz = structures[['x', 'y', 'z']].values.astype(np.float32)
+    train_pairs = train[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    train_types = train[['type']].values
+    test_pairs = test[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    test_types = test[['type']].values
 
-        # Num of bonds of the J interaction
-        expand_df['chain'] = expand_df['type'].apply(lambda t: int(t[0]))
+    # For train and test
+    for df_name, df, df_pairs, df_types, df_ssx, df_dict in zip(
+            ['train', 'test'],
+            [train, test],
+            [train_pairs, test_pairs],
+            [train_types, test_types],
+            [train_ssx, test_ssx],
+            [train_dict, test_dict],
+    ):
+        print(f'{df_name} feature engineering ...')
 
-        accum = [] # Accumulate line computations in list to avoid writing to pandas df inside loop
-        for i, row in tqdm.tqdm(enumerate(expand_df.itertuples(index=True)), total=expand_df.shape[0]):
+        # For each molecule
+        feats = []
+        unique_mols = df['molecule_name'].unique()
+        for mol in tqdm.tqdm(unique_mols, total=unique_mols.shape[0]):
 
-            # Accumulator intermediate vars
-            j3_middle_ixs = [np.nan, np.nan]
-            j3_torsion_angle = np.nan
-            j2_middle_ix = np.nan
-            j2_bond_angle = np.nan
+            mol_ix = xyz_dict[mol]
+            mol_pairs_ix = df_dict[mol]
+            mol_xyz = xyz[xyz_ssx[mol_ix]:xyz_ssx[mol_ix + 1], :]
+            mol_pairs = df_pairs[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
+            mol_types = df_types[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
 
-            bond_angles = rep_dict[row.molecule_name]['bond_angles']
-            torsion_angles = rep_dict[row.molecule_name]['torsion_angles']
+            # Core calculations
+            cyl_feats = numba_cyl_features(mol_xyz, mol_pairs, np.array(radii))
 
-            # Fill middle index for 2J coups
-            if row.chain == 2:
-                valid_bonds = bond_angles[ # Consider both start-end or end-start
-                    ((bond_angles[:, 0] == row.atom_index_0) & (bond_angles[:, -2] == row.atom_index_1)) |
-                    ((bond_angles[:, 0] == row.atom_index_1) & (bond_angles[:, -2] == row.atom_index_0))
-                , :]
+            feats.append(np.hstack([
+                cyl_feats,
+            ]))
 
-                if valid_bonds.shape[0] > 1:
-                    print(f'> Warning: 2J coupling from {row.atom_index_0:d} to {row.atom_index_1} on molecule'
-                          f' {row.molecule_name} has {valid_bonds.shape[0]:d} possible paths with angles {valid_bonds[:,-1]}.'
-                          f' Considering first path found.')
+        # Define feature names and save to disk
+        feat_names = [f'cyl_r_{r:.2f}' for r in radii]
+        pd.DataFrame(
+            data=np.vstack(feats),
+            columns=feat_names,
+            dtype=np.float32,
+        ).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
 
-                j2_middle_ix = valid_bonds[p, 1]  # Added index of middle atom
-                j2_bond_angle = valid_bonds[p, -1] # Bond angle features
+def core_features(save_dir, prefix):
 
+    TYPE_DICT = {
+        '1JHN': 0,
+        '1JHC': 1,
+        '2JHH': 2,
+        '2JHN': 3,
+        '2JHC': 4,
+        '3JHH': 5,
+        '3JHC': 6,
+        '3JHN': 7,
+    }
 
-            # Fill middle indexes for 3J coups
-            elif row.chain == 3:
-                valid_torsions = torsion_angles[ # Consider both start-end or end-start
-                    ((torsion_angles[:, 0] == row.atom_index_0) & (torsion_angles[:, -2] == row.atom_index_1)) |
-                    ((torsion_angles[:, 0] == row.atom_index_1) & (torsion_angles[:, -2] == row.atom_index_0))
-                ,:]
-
-                # If beginning of path in report is symmetric from specified path in train, pick correct order for middle 2 atoms
-                rev_path = True if valid_torsions[p,0] == row.atom_index_1 else False
-
-                if valid_torsions.shape[0] > 1:
-                    print(f'> Warning: 3J coupling from {row.atom_index_0:d} to {row.atom_index_1} on molecule'
-                          f' {row.molecule_name} has {valid_torsions.shape[0]:d} possible paths with angles {valid_torsions[:,-1]}.'
-                          f' Considering first path found.')
-                middle_ixs = valid_torsions[p, 1:3]
-                if rev_path:
-                    middle_ixs = middle_ixs[::-1]
-
-                j3_middle_ixs = middle_ixs # Added indexes of middle atoms
-                j3_torsion_angle = valid_torsions[p, -1] # Torsion angle features
-
-            accum.append([j2_middle_ix, j3_middle_ixs[0], j3_middle_ixs[1], j2_bond_angle, j3_torsion_angle])
-
-        extra_info = np.vstack(accum)
-        # Assign accumulated info to columns in df
-        col_names = [
-            'j2_middle_ix',
-            'j3_middle_ix_0',
-            'j3_middle_ix_1',
-            'j2_bond_angle',
-            'j3_torsion_angle',
-        ]
-        for i, col_name in enumerate(col_names):
-            expand_df[col_name] = extra_info[:, i]
-
-        if save_path is not None:
-            expand_df.to_hdf(save_path + '/' + f'{name}_expanded.h5', key='none', mode='w')
-
-def angle_features(save_dir, prefix):
-    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf('data/test_expanded.h5', mode='r')
-
-    angles = ['j2_bond_angle', 'j3_torsion_angle']
-
-    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
-
-        feats = np.vstack([np.array(df[col]) for col in angles] + [np.cos(df[col]) for col in angles]).T
-        new_feats = pd.DataFrame(data=feats, columns=['j2_bond_angle', 'j3_torsion_angle', 'j2_bond_angle_cos', 'j3_torsion_angle_cos'])
-
-        if save_dir is not None:
-            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
-
-def distance_features(save_dir, prefix):
-    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf(
-        'data/test_expanded.h5', mode='r')
-    struct = pd.read_csv('data/structures.csv')
-
-    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
-
-        def map_atom_info(df, atom_ix):
-            df = pd.merge(
-                df, struct, how='left',
-                left_on=['molecule_name', f'atom_index_{atom_ix:d}'],
-                right_on=['molecule_name', f'atom_index'],
-            )
-            df = df.drop('atom_index', axis=1)
-            df = df.rename(
-                columns={
-                    'atom' : f'atom_{atom_ix:d}',
-                    'x' : f'x_{atom_ix}',
-                    'y' : f'y_{atom_ix}',
-                    'z' : f'z_{atom_ix}',
-                }
-            )
-            return df
-
-        df = map_atom_info(df, 0)
-        df = map_atom_info(df, 1)
-
-        df_p_0 = df[['x_0', 'y_0', 'z_0']].values
-        df_p_1 = df[['x_1', 'y_1', 'z_1']].values
-
-        dist = np.linalg.norm(df_p_0 - df_p_1, axis=1)
-
-        dist = np.vstack(
-            [
-                dist,
-                1/dist,
-                1/dist**2,
-                1/dist**3,
-            ]
-        ).T
-
-        new_feats = pd.DataFrame(data=dist, columns=['dist', 'inv_dist', 'inv_dist_2', 'inv_dist_3'])
-
-        if save_dir is not None:
-            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
-
-def compute_acsf_descriptors(prefix, rcutoffs):
-
-    species = ['H', 'C', 'N', 'O', 'F']
-    g2_params = [
-        [1, 0],
-        [1, 1],
-        [1, 2],
-        [1, 3],
-        [1, 4],
-        [4, 1],
-        [4, 2],
-        [4, 3],
-        [4, 4],
+    feature_names = [
+        'angle_2J',
+        'npaths_3J',
+        'torsion_3J_min',
+        'torsion_3J_max',
     ]
-    g4_params = [
-        [1, 1, 1],
-        [1, 4, 1],
-        [1, 8, 1],
-        [1, 16, 1],
-        [1, 32, 1],
-        [1, 64, 1],
-        [1, 1, -1],
-        [1, 4, -1],
-        [1, 8, -1],
-        [1, 16, -1],
-        [1, 32, -1],
-        [1, 64, -1],
+
+    feature_dtypes = {
+        'order_1J': np.float16,
+        'angle_2J': np.float16,
+        'npaths_3J': np.float16,
+        'torsion_3J_min': np.float16,
+        'torsion_3J_max': np.float16,
+    }
+
+    # Load data
+    structures = pd.read_csv('data/structures.csv')
+    train = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
+
+    # Fast lookups
+    train_ssx, train_dict = gen_lookups(train, 'molecule_name')
+    test_ssx, test_dict = gen_lookups(test, 'molecule_name')
+
+    # Numpy data
+    train_pairs = train[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    train_types = train['type'].map(TYPE_DICT).values.astype(np.uint8)
+    train_ptypes = np.hstack([train_pairs, train_types[:, None]])
+    train_uniques = train['molecule_name'].unique()
+    test_pairs = test[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    test_types = test['type'].map(TYPE_DICT).values.astype(np.uint8)
+    test_ptypes = np.hstack([test_pairs, test_types[:, None]])
+    test_uniques = test['molecule_name'].unique()
+
+    del train, test, structures
+    gc.collect()
+
+    # For train and test
+    for df_name, df_uniques, df_ptypes, df_ssx, df_dict in zip(
+            ['train', 'test'],
+            [train_uniques, test_uniques],
+            [train_ptypes, test_ptypes],
+            [train_ssx, test_ssx],
+            [train_dict, test_dict],
+    ):
+        print(f'{df_name} feature engineering ...')
+
+        # For each molecule
+        feats = []
+        feature_chunks = []
+        for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
+            for mol in readfile('xyz', f'data/structures/{mol_name}.xyz'):
+                mol = mol.OBMol
+
+            # Bond types matrix to allow for custom features for each bond type
+            mol_pairs_ix = df_dict[mol_name]
+            mol_ptypes = df_ptypes[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
+
+            # Fill orders, angles and torsions matrices
+
+            bonds = []
+            for bond in OBMolBondIter(mol):
+                beg_ix = bond.GetBeginAtomIdx() - 1
+                end_ix = bond.GetEndAtomIdx() - 1
+                order = bond.GetBondOrder()
+                bonds.append([beg_ix, end_ix, order])
+            bond_mat = np.vstack(bonds)
+
+            angles = []
+            for angle in OBMolAngleIter(mol):
+                # WARNING : angles come with center atom first, hence the 1 0 2 order to compute the correct angle
+                angle_in_degrees = mol.GetAngle(mol.GetAtom(angle[1] + 1), mol.GetAtom(angle[0] + 1),
+                                                mol.GetAtom(angle[2] + 1))
+                angles.append([angle[1], angle[0], angle[2], angle_in_degrees])
+            angle_mat = np.vstack(angles)
+
+            torsions = []
+            for torsion in OBMolTorsionIter(mol):
+                torsion_in_degrees = mol.GetTorsion(torsion[0] + 1, torsion[1] + 1, torsion[2] + 1, torsion[3] + 1)
+                torsions.append([torsion[0], torsion[1], torsion[2], torsion[3], torsion_in_degrees])
+            if torsions:
+                torsion_mat = np.vstack(torsions)
+
+            # Feat engineering
+
+            NPAIRS = mol_ptypes.shape[0]
+
+            feature_chunk = np.empty(shape=(NPAIRS, len(feature_names)), dtype=np.float32)
+            feature_chunk.fill(np.nan)
+
+            for i in range(NPAIRS):
+                t = mol_ptypes[i, 2]
+                pair = mol_ptypes[i, :2]
+
+                # Coupling order feats
+
+                if t == 0 or t == 1:
+                    bond_ixs = find_line(pair, bond_mat[:, :2])
+                    bond = bond_mat[bond_ixs[0], 2]
+
+                    feature_chunk[i, 0] = bond
+
+                elif t == 2 or t == 3 or t == 4:
+                    angle_ixs = find_line(pair, angle_mat[:, [0, 2]])
+                    angle = angle_mat[angle_ixs[0], 3]
+
+                    feature_chunk[i, 1] = angle
+
+                else:
+                    torsion_ixs = find_line(pair, torsion_mat[:, [0, 3]])
+                    torsions = torsion_mat[torsion_ixs, 4]
+                    n_paths = torsions.size
+                    min_torsion = np.min(torsions)
+                    max_torsion = np.max(torsions)
+
+                    feature_chunk[i, 2] = n_paths
+                    feature_chunk[i, 3] = min_torsion
+                    feature_chunk[i, 4] = max_torsion
+
+            feature_chunks.append(feature_chunk)
+
+        pd.DataFrame(
+            data=np.vstack(feature_chunks),
+            columns=feature_names,
+        ).astype(feature_dtypes).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
+
+def core_features_rings(save_dir, prefix):
+
+    TYPE_DICT = {
+        '1JHN': 0,
+        '1JHC': 1,
+        '2JHH': 2,
+        '2JHN': 3,
+        '2JHC': 4,
+        '3JHH': 5,
+        '3JHC': 6,
+        '3JHN': 7,
+    }
+
+    # Load data
+    structures = pd.read_csv('data/structures.csv')
+    train = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
+
+    # Fast lookups
+    train_ssx, train_dict = gen_lookups(train, 'molecule_name')
+    test_ssx, test_dict = gen_lookups(test, 'molecule_name')
+
+    # Numpy data
+    train_pairs = train[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    train_types = train['type'].map(TYPE_DICT).values.astype(np.uint8)
+    train_ptypes = np.hstack([train_pairs, train_types[:, None]])
+    train_uniques = train['molecule_name'].unique()
+    test_pairs = test[['atom_index_0', 'atom_index_1']].values.astype(np.int8)
+    test_types = test['type'].map(TYPE_DICT).values.astype(np.uint8)
+    test_ptypes = np.hstack([test_pairs, test_types[:, None]])
+    test_uniques = test['molecule_name'].unique()
+
+    del train, test, structures
+    gc.collect()
+
+    ring_feature_names = [
+        'path_n_rings',
+        'max_path_ring_size',
+        'max_path_num_rings'
     ]
-    g5_params = [
-        [1, 1, 1],
-        [1, 4, 1],
-        [1, 8, 1],
-        [1, 16, 1],
-        [1, 32, 1],
-        [1, 64, 1],
-        [1, 1, -1],
-        [1, 4, -1],
-        [1, 8, -1],
-        [1, 16, -1],
-        [1, 32, -1],
-        [1, 64, -1],
-    ]
-    featnames = ['g1'] +\
-                [f'g2_{i:d}' for i in range(len(g2_params))] +\
-                [f'g4_{i:d}' for i in range(len(g4_params) * 3)] +\
-                [f'g5_{i:d}' for i in range(len(g5_params) * 3)]
+    # ring_feature_names = []
+    # for atom in ['x', 'y', 'z']:
+    #     ring_feature_names.extend([f'{atom}_{n}' for n in ring_feature_base_names])
 
-    col_names = []
-    for s in species:
-        col_names.extend(
-            [f'{s}_{fn}' for fn in featnames]
-        )
+    # For train and test
+    for df_name, df_uniques, df_ptypes, df_ssx, df_dict in zip(
+            ['train', 'test'],
+            [train_uniques, test_uniques],
+            [train_ptypes, test_ptypes],
+            [train_ssx, test_ssx],
+            [train_dict, test_dict],
+    ):
+        print(f'{df_name} feature engineering ...')
 
-    # Set up ACSF descriptor
-    acsf = ACSF(
-        g2_params=g2_params,
-        g4_params=g4_params,
-        g5_params=g5_params,
-        species=species,
-        rcut=rcutoffs[0],
-    )
+        # For each molecule
+        feature_chunks = []
+        for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
 
-    # Read mol info
-    xyz_files = glob.glob('data/structures/*.xyz')
-    mols = []
-    for xyz_file in tqdm.tqdm(xyz_files, total=len(xyz_files)):
-        mol = read(xyz_file, format='xyz')
-        # print(mol.get_atomic_numbers())
-        mols.append(mol)
+            for mol in readfile('xyz', f'data/structures/{mol_name}.xyz'):
+                mol = mol.OBMol
 
-    # Create ACSF output for all mols
-    acsf_mol = acsf.create(mols, positions=None)
+            # Bond types matrix to allow for custom features for each bond type
+            mol_pairs_ix = df_dict[mol_name]
+            mol_ptypes = df_ptypes[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
 
-    # Save ACSF descriptors
-    pd.DataFrame(
-        data=acsf_mol, columns=col_names
-    ).to_hdf(f'data/descriptors/{prefix}.h5', key='acsf', mode='w')
+            # Fill orders, angles and torsions matrices
+            bonds = []
+            for bond in OBMolBondIter(mol):
+                beg_ix = bond.GetBeginAtomIdx()
+                end_ix = bond.GetEndAtomIdx()
+                order = bond.GetBondOrder()
+                bonds.append([beg_ix - 1, end_ix - 1, order])
+            bond_mat = np.vstack(bonds)
 
-def compute_acsf_features(acsf_file, save_dir, prefix):
+            angles = []
+            for angle in OBMolAngleIter(mol):
+                # WARNING : angles come with center atom first, hence the 1 0 2 order to compute the correct angle
+                angle_in_degrees = mol.GetAngle(mol.GetAtom(angle[1] + 1), mol.GetAtom(angle[0] + 1),
+                                                mol.GetAtom(angle[2] + 1))
+                angles.append([angle[1], angle[0], angle[2], angle_in_degrees])
+            angle_mat = np.vstack(angles)
 
-    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf(
-        'data/test_expanded.h5', mode='r')
-    struct = pd.read_csv('data/structures.csv')
-    acsf = pd.read_hdf(f'data/descriptors/{acsf_file}.h5')
-    acsf_cols = list(acsf.columns)
-    acsf = pd.concat([struct, acsf], axis=1)
+            torsions = []
+            for torsion in OBMolTorsionIter(mol):
+                torsion_in_degrees = mol.GetTorsion(torsion[0] + 1, torsion[1] + 1, torsion[2] + 1, torsion[3] + 1)
+                torsions.append([torsion[0], torsion[1], torsion[2], torsion[3], torsion_in_degrees])
+            if torsions:
+                torsion_mat = np.vstack(torsions)
 
-    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
+            # Feat engineering
 
-        def map_atom_info(df, atom_ix):
-            df = pd.merge(
-                df, acsf, how='left',
-                left_on=['molecule_name', f'atom_index_{atom_ix:d}'],
-                right_on=['molecule_name', f'atom_index'],
-            )
-            df = df.drop('atom_index', axis=1)
+            NPAIRS = mol_ptypes.shape[0]
+            fs = np.empty(shape=(NPAIRS, 12), dtype=np.float32)
+            fs.fill(np.nan)
 
-            new_names = {cname: f'a{atom_ix:d}_{cname}' for cname in acsf_cols}
-            new_names['atom'] = f'atom_{atom_ix:d}'
-            df = df.rename(
-                columns=new_names
-            )
+            # Ring info
+            rmat = None
+            ring_infos = []
+            for ring in mol.GetSSSR():
+                RSIZE = ring.Size()
+                rixs = np.array(ring._path) - 1
+                rsize = np.ones(RSIZE) * RSIZE
+                ring_infos.append(np.vstack([rixs, rsize]))
+            if ring_infos:
+                rmat = np.hstack(ring_infos).T
+                mn_mat = numba_fill_paths(abt=mol_ptypes, angle_mat=angle_mat, torsion_mat=torsion_mat)
 
-            return df
+                # Compute ring feats for x,y,z atoms
+                NA = -1
+                BLOCKSIZE = 4
 
-        print('merge 0...')
-        df = map_atom_info(df, 0)
-        print('merge 1...')
-        df = map_atom_info(df, 1)
+                for k, ixs in enumerate([mol_ptypes[:, 1], mn_mat[:, 0], mn_mat[:, 1]]):
+                    beg = k*BLOCKSIZE
+                    end = beg + BLOCKSIZE
+                    fs[:, beg:end] = numba_ring_mat_feats(rmat=rmat, ixs=ixs)
 
-        new_feat_cols = [f'a0_{cname}' for cname in acsf_cols] + [f'a1_{cname}' for cname in acsf_cols]
-        new_feats = df.loc[:, new_feat_cols]
+                nrings = np.sum(fs[:,[3,7,11]], axis=1, keepdims=True)
+                maxrsize = np.max(fs[:,[1,5,9]], axis=1, keepdims=True)
+                maxdelta = np.max(fs[:,[2,6,10]], axis=1, keepdims=True)
+                fs = np.hstack([nrings, maxrsize, maxdelta])
 
-        if save_dir is not None:
-            new_feats.to_hdf(f'{save_dir}/{prefix}_{name}.h5', key='df', mode='w')
+                feature_chunks.append(fs)
+
+        pd.DataFrame(
+            data=np.vstack(feature_chunks),
+            columns=ring_feature_names,
+        ).astype(np.int16).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
 
 if __name__ == '__main__':
-    # expand_dataset('./data')
-    # angle_features(save_dir='features', prefix='angle_feats')
-    # distance_features(save_dir='features', prefix='simple_distance_v2')
-    for r in [2,4,6,8,10]:
-        print(r)
-        name=f'g2_g4_g5_v3_r{r:d}'
-        compute_acsf_descriptors(prefix=name, rcutoffs=[r])
-        compute_acsf_features(acsf_file=name, save_dir='features', prefix=name)
-    # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
-    # calc_CM_pair_features(max_terms=5, save_dir='features', save_name_prefix='cm_unsorted_maxterms_5')
-
-
-
-
+    # gps_standard_features(15, save_dir='features', prefix='gps_base')
+    cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
+    # core_features(save_dir='features', prefix='core_feats')
+    # core_features_rings(save_dir='features', prefix='ring_feats_v2')
+    # test_cyl()
