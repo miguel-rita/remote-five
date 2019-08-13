@@ -26,6 +26,19 @@ def numba_find_line(line, arr, accept_reverse=True):
     return ixs[ixs > NA].astype(np.uint16)
 
 @jit(nopython=True)
+def numba_args_where(num, vec):
+    N = vec.shape[0]
+    NA = -1
+    ixs = np.ones(N) * NA
+    iii = 0
+    for i in range(N):
+        c = vec[i]
+        if c==num:
+            ixs[iii] = i
+            iii += 1
+    return ixs[ixs > NA].astype(np.uint16)
+
+@jit(nopython=True)
 def numba_ring_mat_feats(rmat, ixs):
     '''
     Given rmat with 2 columns, where column 1 is atom_ix and column 2 is the size of the ring where it was found

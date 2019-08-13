@@ -77,23 +77,6 @@ def select_feats_per_type(ctype):
         'sorted_CM_13_atom_1',
         'sorted_CM_14_atom_1',
     ]
-    cm_a1_fn = [
-        'sorted_CM_0_atom_1',
-        'sorted_CM_1_atom_1',
-        'sorted_CM_2_atom_1',
-        'sorted_CM_3_atom_1',
-        'sorted_CM_4_atom_1',
-        'sorted_CM_5_atom_1',
-        'sorted_CM_6_atom_1',
-        'sorted_CM_7_atom_1',
-        'sorted_CM_8_atom_1',
-        'sorted_CM_9_atom_1',
-        'sorted_CM_10_atom_1',
-        'sorted_CM_11_atom_1',
-        'sorted_CM_12_atom_1',
-        'sorted_CM_13_atom_1',
-        'sorted_CM_14_atom_1',
-    ]
     radii_fm = [
         'cyl_r_0.50',
         'cyl_r_0.75',
@@ -104,12 +87,21 @@ def select_feats_per_type(ctype):
         'cyl_r_3.00',
     ]
     gen_rfn = lambda c : [f'{c}_{n}' for n in ring_feature_names]
+    aggs = ['min', 'max', 'avg']
+    core_v2 = [
+        'geminal_angle',
+        # 'min_vicinal_angle',
+        # 'max_vicinal_angle',
+        # 'avg_vicinal_angle',
+    ]
+    for n in ['all_x_pivot_angles', 'all_y_pivot_angles']:#, 'all_xy_center_torsions']:
+        core_v2.extend([f'{n}_{agg}' for agg in aggs])
 
     # Commom features to all types
-    feature_set = []#cm_fn
-    feats_1J = cm_a1_fn#gen_rfn('x')
-    feats_2J = cm_fn
-    feats_3J = cm_fn
+    feature_set = cm_fn
+    feats_1J = core_v2#gen_rfn('x')
+    feats_2J = core_v2#gen_rfn('x') + gen_rfn('y')
+    feats_3J = radii_fm
 
     # Type specific features
     if ctype == '1JHN':
@@ -122,32 +114,26 @@ def select_feats_per_type(ctype):
 
     elif ctype == '2JHH':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['angle_2J'])
         feature_set.extend(feats_2J)
 
     elif ctype == '2JHN':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['angle_2J'])
         feature_set.extend(feats_2J)
 
     elif ctype == '2JHC':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['angle_2J'])
         feature_set.extend(feats_2J)
 
     elif ctype == '3JHH':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['torsion_3J_min'])
         feature_set.extend(feats_3J)
 
     elif ctype == '3JHC':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['torsion_3J_min'])
         feature_set.extend(feats_3J)
 
     elif ctype == '3JHN':
         feature_set.extend(get_gps_feature_cols(n_atoms=10))
-        feature_set.extend(['torsion_3J_min'])
         feature_set.extend(feats_3J)
 
     else:
@@ -195,7 +181,7 @@ def stack_one():
     featsets = [
         'gps_base',
         'cyl_feats',
-        'core_feats',
+        'core_feats_v2',
         'cm_unsorted_maxterms_15'
     ]
     logging.info(f'Using feature sets: {featsets}')
@@ -210,9 +196,9 @@ def stack_one():
         'verbosity': -1,
         'boosting_type': 'gbdt',
         'learning_rate': 0.05,
-        'num_leaves': 256,
+        'num_leaves': 128,
         'min_child_samples': 80,
-        'n_estimators': 200,
+        'n_estimators': 500,
         'n_jobs': -1,
     }
     logging.info(f'LGB parameters:')

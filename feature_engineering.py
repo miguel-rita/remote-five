@@ -5,7 +5,7 @@ from numba import jit
 from openbabel import *
 from pybel import readfile
 from utils.misc import get_gps_feature_cols, find_line
-from utils.numba_utils import numba_ring_mat_feats, numba_fill_paths
+from utils.numba_utils import numba_ring_mat_feats, numba_fill_paths, numba_args_where, numba_find_line
 
 def gen_lookups(df, gb_col):
     '''
@@ -34,7 +34,6 @@ def numba_dist_matrix(mol_xyz):
             dmat[i, j] = d
             dmat[j, i] = d
     return dmat
-
 
 @jit(nopython=True)
 def numba_gps_features(xyz, pairs, n_feat_atoms):
@@ -122,6 +121,81 @@ def numba_cyl_features(xyz, pairs, rs):
             out[i, j] = ct
 
     return out
+
+# @jit(nopython=True)
+def numba_angle_features(mol_ptypes, angle_mat, torsion_mat, nfeats):
+
+    NPAIRS = mol_ptypes.shape[0]
+
+    feats = np.empty(shape=(NPAIRS, nfeats), dtype=np.float32)
+    feats.fill(np.nan)
+
+    for i in range(NPAIRS):
+        t = mol_ptypes[i, 2]
+        pair = mol_ptypes[i, :2]
+
+        # Initialize X Y Z
+        a = mol_ptypes[i, 0]
+        b = mol_ptypes[i, 1]
+
+        # extract angle_mat both ends
+        angle_mat_0 = angle_mat[:, 0]
+        angle_mat_2 = angle_mat[:, 2]
+        angle_mat_ends = np.vstack((angle_mat_0, angle_mat_2)).T
+
+        if t == 0 or t == 1:
+            x = b
+        elif t == 2 or t == 3 or t == 4:
+            x_ix = numba_find_line(pair, angle_mat_ends)
+            x = angle_mat[x_ix, 1]
+            y = b
+        else:
+            z = b
+            continue
+            # x,y left uninitialized for 3J
+
+        # up to 1J feats
+        all_x_pivot_angles_ixs = numba_args_where(int(x), angle_mat[:, 1])
+
+        n = len(all_x_pivot_angles_ixs)
+        all_x_pivot_angles = np.zeros(n)
+        for j, ix in enumerate(all_x_pivot_angles_ixs):
+            all_x_pivot_angles[j] = angle_mat[ix, 3]
+
+        feats[i, 1] = np.min(all_x_pivot_angles)
+        feats[i, 2] = np.max(all_x_pivot_angles)
+        feats[i, 3] = np.mean(all_x_pivot_angles)
+
+        # 2J and 3J only feats
+        if t >= 2:
+            geminal_ix = numba_find_line(pair, angle_mat_ends)[0]
+            feats[i, 0] = angle_mat[geminal_ix, 3]
+
+            all_y_pivot_angles_ixs = numba_args_where(y, angle_mat[:, 1])
+            n = all_y_pivot_angles_ixs.shape[0]
+
+            if n > 0: #if y pivots found
+                all_y_pivot_angles = np.zeros(n)
+                for j, ix in enumerate(all_y_pivot_angles_ixs):
+                    all_y_pivot_angles[j] = angle_mat[ix, 3]
+
+                feats[i, 4] = np.min(all_y_pivot_angles)
+                feats[i, 5] = np.max(all_y_pivot_angles)
+                feats[i, 6] = np.mean(all_y_pivot_angles)
+
+    return feats
+
+    # # 3J only feats
+    # if t>=5:
+    #     vicinal_torsion_ixs = find_line(pair, torsion_mat[:, [0, 3]])
+    #     n = vicinal_torsion_ixs.shape[0]
+    #     vicinal_torsions = np.zeros(n)
+    #     vicinal_centers = np.zeros(n, 2)
+    #     for j, ix in enumerate(vicinal_torsion_ixs):
+    #         vicinal_torsions[j] = torsion_mat[ix, 4]
+    #         vicinal_centers[j, :] = torsion_mat[ix, 1:3]
+    #
+    #     for center in vicinal_centers:
 
 def test_cyl():
     xyz = np.array([
@@ -281,21 +355,16 @@ def core_features(save_dir, prefix):
         '3JHC': 6,
         '3JHN': 7,
     }
-
+    
+    aggs = ['min', 'max', 'avg']
     feature_names = [
-        'angle_2J',
-        'npaths_3J',
-        'torsion_3J_min',
-        'torsion_3J_max',
+        'geminal_angle',
+        # 'min_vicinal_angle',
+        # 'max_vicinal_angle',
+        # 'avg_vicinal_angle',
     ]
-
-    feature_dtypes = {
-        'order_1J': np.float16,
-        'angle_2J': np.float16,
-        'npaths_3J': np.float16,
-        'torsion_3J_min': np.float16,
-        'torsion_3J_max': np.float16,
-    }
+    for n in ['all_x_pivot_angles', 'all_y_pivot_angles']:#, 'all_xy_center_torsions']:
+        feature_names.extend([f'{n}_{agg}' for agg in aggs])
 
     # Load data
     structures = pd.read_csv('data/structures.csv')
@@ -330,7 +399,6 @@ def core_features(save_dir, prefix):
         print(f'{df_name} feature engineering ...')
 
         # For each molecule
-        feats = []
         feature_chunks = []
         for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
             for mol in readfile('xyz', f'data/structures/{mol_name}.xyz'):
@@ -364,49 +432,17 @@ def core_features(save_dir, prefix):
                 torsions.append([torsion[0], torsion[1], torsion[2], torsion[3], torsion_in_degrees])
             if torsions:
                 torsion_mat = np.vstack(torsions)
+            else:
+                torsion_mat = np.zeros(1)
 
             # Feat engineering
-
-            NPAIRS = mol_ptypes.shape[0]
-
-            feature_chunk = np.empty(shape=(NPAIRS, len(feature_names)), dtype=np.float32)
-            feature_chunk.fill(np.nan)
-
-            for i in range(NPAIRS):
-                t = mol_ptypes[i, 2]
-                pair = mol_ptypes[i, :2]
-
-                # Coupling order feats
-
-                if t == 0 or t == 1:
-                    bond_ixs = find_line(pair, bond_mat[:, :2])
-                    bond = bond_mat[bond_ixs[0], 2]
-
-                    feature_chunk[i, 0] = bond
-
-                elif t == 2 or t == 3 or t == 4:
-                    angle_ixs = find_line(pair, angle_mat[:, [0, 2]])
-                    angle = angle_mat[angle_ixs[0], 3]
-
-                    feature_chunk[i, 1] = angle
-
-                else:
-                    torsion_ixs = find_line(pair, torsion_mat[:, [0, 3]])
-                    torsions = torsion_mat[torsion_ixs, 4]
-                    n_paths = torsions.size
-                    min_torsion = np.min(torsions)
-                    max_torsion = np.max(torsions)
-
-                    feature_chunk[i, 2] = n_paths
-                    feature_chunk[i, 3] = min_torsion
-                    feature_chunk[i, 4] = max_torsion
-
-            feature_chunks.append(feature_chunk)
+            feats = numba_angle_features(mol_ptypes.astype(int), angle_mat.astype(int), torsion_mat, len(feature_names))
+            feature_chunks.append(feats)
 
         pd.DataFrame(
             data=np.vstack(feature_chunks),
             columns=feature_names,
-        ).astype(feature_dtypes).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
+        ).astype(np.float16).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
 
 def core_features_rings(save_dir, prefix):
 
@@ -538,7 +574,7 @@ def core_features_rings(save_dir, prefix):
 
 if __name__ == '__main__':
     # gps_standard_features(15, save_dir='features', prefix='gps_base')
-    cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
-    # core_features(save_dir='features', prefix='core_feats')
+    # cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
+    core_features(save_dir='features', prefix='core_feats_v2')
     # core_features_rings(save_dir='features', prefix='ring_feats_v2')
     # test_cyl()
