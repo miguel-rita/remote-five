@@ -264,12 +264,10 @@ def numba_angle_features(mol_ptypes, angle_mat, angles, torsion_mat, torsions, n
 
         angle_mat_ends = numba_extract_concat_cols(np.array([0, 2], dtype=np.int16), angle_mat)
         if torsion_mat.size > 0: # if torsions exist
-            print(torsion_mat.shape)
             torsion_mat_ends = numba_extract_concat_cols(np.array([0, 3], dtype=np.int16), torsion_mat)
 
         UNDEFINED_IX = -2 # -1 reserved for empty placeholder on feature variations below
         H = a
-        X = UNDEFINED_IX
         Y = UNDEFINED_IX
         Z = UNDEFINED_IX
         if t == 0 or t == 1:
@@ -288,6 +286,15 @@ def numba_angle_features(mol_ptypes, angle_mat, angles, torsion_mat, torsions, n
             else: # H found first, no reversion, hence X is just after first (pos 1)
                 X_ix = 1
             X = torsion_mat[x_ixs[0], X_ix]
+
+            # If 3JHH, Y can also be defined unambiguously
+            if t==5:
+                if revs[0]:  # H found last, hence Y after first (pos 1)
+                    Y_ix = 1
+                else:  # H found first, no reversion, hence Y is before last (pos 2)
+                    Y_ix = 2
+                Y = torsion_mat[x_ixs[0], Y_ix]
+
             Z = b
 
         # Get all possible angle/torsion partial/complete combinations
@@ -312,16 +319,17 @@ def numba_angle_features(mol_ptypes, angle_mat, angles, torsion_mat, torsions, n
         COL_OFFSET = NANG_COMBS * AGGS
 
         # Torsions
-        NTORS_COMBS = torsion_combs.shape[0]
-        for j in range(NTORS_COMBS):
-            ixs = numba_vicinal_ixs(torsion_combs[j, :], torsion_mat=torsion_mat)
-            NTORSIONS = ixs.size
-            if NTORSIONS:
-                agg_torsions = torsions[ixs]
-                feats[i, COL_OFFSET + j * AGGS] = agg_torsions.size
-                feats[i, COL_OFFSET + j * AGGS + 1] = np.min(agg_torsions)
-                feats[i, COL_OFFSET + j * AGGS + 2] = np.max(agg_torsions)
-                feats[i, COL_OFFSET + j * AGGS + 3] = np.mean(agg_torsions)
+        if torsion_mat.size > 0: # if torsions exist
+            NTORS_COMBS = torsion_combs.shape[0]
+            for j in range(NTORS_COMBS):
+                ixs = numba_vicinal_ixs(torsion_combs[j, :], torsion_mat=torsion_mat)
+                NTORSIONS = ixs.size
+                if NTORSIONS:
+                    agg_torsions = torsions[ixs]
+                    feats[i, COL_OFFSET + j * AGGS] = agg_torsions.size
+                    feats[i, COL_OFFSET + j * AGGS + 1] = np.min(agg_torsions)
+                    feats[i, COL_OFFSET + j * AGGS + 2] = np.max(agg_torsions)
+                    feats[i, COL_OFFSET + j * AGGS + 3] = np.mean(agg_torsions)
 
     return feats
 
@@ -509,8 +517,8 @@ def core_features(save_dir, prefix):
 
         # For each molecule
         feature_chunks = []
-        for mol_name in tqdm.tqdm(['dsgdb9nsd_035567'], total=df_uniques.shape[0]):
-        # for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
+        # for mol_name in tqdm.tqdm(['dsgdb9nsd_035567'], total=df_uniques.shape[0]):
+        for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
             for mol in readfile('xyz', f'data/structures/{mol_name}.xyz'):
                 mol = mol.OBMol
 

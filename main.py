@@ -4,7 +4,7 @@ import time, datetime, gc, os
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
 from lightgbm import LGBMRegressor
-from utils.misc import get_gps_feature_cols
+from utils.misc import get_gps_feature_cols, get_core_feature_cols
 import logging
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -40,6 +40,7 @@ def train_predict_coupling_type(coupling_type, train, test, y_tgt, local_lgb_par
 
 def select_feats_per_type(ctype):
 
+    # Pending
     ring_feature_names = [
         'path_n_rings',
         'max_path_ring_size',
@@ -86,22 +87,15 @@ def select_feats_per_type(ctype):
         'cyl_r_2.00',
         'cyl_r_3.00',
     ]
+
     gen_rfn = lambda c : [f'{c}_{n}' for n in ring_feature_names]
-    aggs = ['min', 'max', 'avg']
-    core_v2 = [
-        'geminal_angle',
-        # 'min_vicinal_angle',
-        # 'max_vicinal_angle',
-        # 'avg_vicinal_angle',
-    ]
-    for n in ['all_x_pivot_angles', 'all_y_pivot_angles']:#, 'all_xy_center_torsions']:
-        core_v2.extend([f'{n}_{agg}' for agg in aggs])
+    aggs = ['num', 'min', 'max', 'avg']
 
     # Commom features to all types
-    feature_set = cm_fn
-    feats_1J = core_v2#gen_rfn('x')
-    feats_2J = core_v2#gen_rfn('x') + gen_rfn('y')
-    feats_3J = radii_fm
+    feature_set = get_core_feature_cols(ctype=ctype) + cm_fn
+    feats_1J = []#gen_rfn('x')
+    feats_2J = []#gen_rfn('x') + gen_rfn('y')
+    feats_3J = []
 
     # Type specific features
     if ctype == '1JHN':
@@ -181,8 +175,8 @@ def stack_one():
     featsets = [
         'gps_base',
         # 'cyl_feats',
-        # 'core_feats_v2',
-        # 'cm_unsorted_maxterms_15'
+        'core_feats_angles',
+        'cm_unsorted_maxterms_15'
     ]
     logging.info(f'Using feature sets: {featsets}')
     train, test, y_tgt = load_datasets(featsets=featsets)
@@ -196,9 +190,9 @@ def stack_one():
         'verbosity': -1,
         'boosting_type': 'gbdt',
         'learning_rate': 0.05,
-        'num_leaves': 128,
+        'num_leaves': 256,
         'min_child_samples': 80,
-        'n_estimators': 500,
+        'n_estimators': 50000,
         'n_jobs': -1,
     }
     logging.info(f'LGB parameters:')
@@ -235,7 +229,7 @@ def stack_one():
 
         # Feature importances
         df_importance = pd.DataFrame({'feature': ctype_feats, 'importance': model.feature_importances_})
-        f, a = plt.subplots(1, 1, figsize=(10, 0.12 * len(ctype_feats)))
+        f, a = plt.subplots(1, 1, figsize=(10, 0.15 * len(ctype_feats)))
         imp_plot = sns.barplot(x="importance", y="feature", data=df_importance.sort_values('importance', ascending=False), ax=a)
         f.savefig(f'{imp_subdir}/{ctype}_{val_log_mae}.png')
 

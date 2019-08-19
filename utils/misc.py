@@ -21,6 +21,84 @@ def get_gps_feature_cols(n_atoms, include_redundant=False):
             base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)])
     return base_ds
 
+def get_core_feature_cols(ctype):
+    aggs = ['num', 'min', 'max', 'avg']
+    if ctype in ['1JHC', '1JHN']:
+       r = [
+           'h.-.-',
+           '-.x.-',
+           'x.-.-',
+           'h.-.-.-',
+           '-.x.-.-',
+       ] 
+    elif ctype in ['2JHH']:
+        r = [
+            'h.-.-',
+            '-.x.-',
+            '-.-.y',
+            'h.x.y',
+            'x.-.-',
+            'h.-.-.-',
+            '-.x.-.-',
+        ]
+    elif ctype in ['2JHC', '2JHN']:
+        r = [
+            'h.-.-',
+            '-.x.-',
+            '-.-.y',
+            '-.x.y',
+            'h.x.y',
+            'x.-.-',
+            '-.y.-',
+            'x.y.-',
+            'h.-.-.-',
+            '-.x.-.-',
+            '-.-.y.-',
+            '-.x.y.-',
+            'h.x.y.-',
+        ]
+    elif ctype in ['3JHH']:
+        r = [
+            'h.-.-',
+            '-.x.-',
+            '-.-.y',
+            '-.x.y',
+            'h.x.y',
+            'x.-.-',
+            '-.y.-',
+            '-.-.z',
+            'x.y.-',
+            'x.y.z',
+            'h.-.-.-',
+            '-.x.-.-',
+            '-.-.y.-',
+            '-.-.-.z',
+            '-.x.y.-',
+            'h.x.y.-',
+            '-.x.-.z',
+            'h.x.y.z',
+        ]
+    elif ctype in ['3JHC', '3JHN']:
+        r = [
+            'h.-.-',
+            '-.x.-',
+            'x.-.-',
+            '-.-.z',
+            'x.-.z',
+            'h.-.-.-',
+            '-.x.-.-',
+            '-.-.-.z',
+            '-.x.-.z',
+            'h.x.-.z',
+        ]
+    else:
+        raise ValueError(f'Unknown ctype {ctype}')
+
+    ret = []
+    for r_ in r:
+        ret.extend([f'{r_}_{agg}' for agg in aggs])
+
+    return  ret
 
 def save_feature_importance(feature_importance_df, num_feats, relative_save_path=None):
     '''

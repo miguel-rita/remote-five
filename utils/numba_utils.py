@@ -153,7 +153,6 @@ def get_angle_torsion_agg_names():
         'h.x.y.z',
     ]
 
-@jit
 def numba_get_angle_torsion_combinations(h, x, y, z):
     o = -1
     geminal_combs = np.array([
