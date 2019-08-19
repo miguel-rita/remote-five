@@ -180,9 +180,9 @@ def stack_one():
 
     featsets = [
         'gps_base',
-        'cyl_feats',
-        'core_feats_v2',
-        'cm_unsorted_maxterms_15'
+        # 'cyl_feats',
+        # 'core_feats_v2',
+        # 'cm_unsorted_maxterms_15'
     ]
     logging.info(f'Using feature sets: {featsets}')
     train, test, y_tgt = load_datasets(featsets=featsets)

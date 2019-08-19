@@ -5,7 +5,11 @@ from numba import jit
 from openbabel import *
 from pybel import readfile
 from utils.misc import get_gps_feature_cols, find_line
-from utils.numba_utils import numba_ring_mat_feats, numba_fill_paths, numba_args_where, numba_find_line
+from utils.numba_utils import *
+
+'''
+Func definitions
+'''
 
 def gen_lookups(df, gb_col):
     '''
@@ -121,82 +125,6 @@ def numba_cyl_features(xyz, pairs, rs):
             out[i, j] = ct
 
     return out
-
-# @jit(nopython=True)
-def numba_angle_features(mol_ptypes, angle_mat, torsion_mat, nfeats):
-
-    NPAIRS = mol_ptypes.shape[0]
-
-    feats = np.empty(shape=(NPAIRS, nfeats), dtype=np.float32)
-    feats.fill(np.nan)
-
-    for i in range(NPAIRS):
-        t = mol_ptypes[i, 2]
-        pair = mol_ptypes[i, :2]
-
-        # Initialize X Y Z
-        a = mol_ptypes[i, 0]
-        b = mol_ptypes[i, 1]
-
-        # extract angle_mat both ends
-        angle_mat_0 = angle_mat[:, 0]
-        angle_mat_2 = angle_mat[:, 2]
-        angle_mat_ends = np.vstack((angle_mat_0, angle_mat_2)).T
-
-        if t == 0 or t == 1:
-            x = b
-        elif t == 2 or t == 3 or t == 4:
-            x_ix = numba_find_line(pair, angle_mat_ends)
-            x = angle_mat[x_ix, 1]
-            y = b
-        else:
-            z = b
-            continue
-            # x,y left uninitialized for 3J
-
-        # up to 1J feats
-        all_x_pivot_angles_ixs = numba_args_where(int(x), angle_mat[:, 1])
-
-        n = len(all_x_pivot_angles_ixs)
-        all_x_pivot_angles = np.zeros(n)
-        for j, ix in enumerate(all_x_pivot_angles_ixs):
-            all_x_pivot_angles[j] = angle_mat[ix, 3]
-
-        feats[i, 1] = np.min(all_x_pivot_angles)
-        feats[i, 2] = np.max(all_x_pivot_angles)
-        feats[i, 3] = np.mean(all_x_pivot_angles)
-
-        # 2J and 3J only feats
-        if t >= 2:
-            geminal_ix = numba_find_line(pair, angle_mat_ends)[0]
-            feats[i, 0] = angle_mat[geminal_ix, 3]
-
-            all_y_pivot_angles_ixs = numba_args_where(y, angle_mat[:, 1])
-            n = all_y_pivot_angles_ixs.shape[0]
-
-            if n > 0: #if y pivots found
-                all_y_pivot_angles = np.zeros(n)
-                for j, ix in enumerate(all_y_pivot_angles_ixs):
-                    all_y_pivot_angles[j] = angle_mat[ix, 3]
-
-                feats[i, 4] = np.min(all_y_pivot_angles)
-                feats[i, 5] = np.max(all_y_pivot_angles)
-                feats[i, 6] = np.mean(all_y_pivot_angles)
-
-    return feats
-
-    # # 3J only feats
-    # if t>=5:
-    #     vicinal_torsion_ixs = find_line(pair, torsion_mat[:, [0, 3]])
-    #     n = vicinal_torsion_ixs.shape[0]
-    #     vicinal_torsions = np.zeros(n)
-    #     vicinal_centers = np.zeros(n, 2)
-    #     for j, ix in enumerate(vicinal_torsion_ixs):
-    #         vicinal_torsions[j] = torsion_mat[ix, 4]
-    #         vicinal_centers[j, :] = torsion_mat[ix, 1:3]
-    #
-    #     for center in vicinal_centers:
-
 def test_cyl():
     xyz = np.array([
         [0,0,0],
@@ -215,6 +143,188 @@ def test_cyl():
     rs = np.array([0.5, 1.5, 5])
     print(numba_cyl_features(xyz, pairs, rs))
 
+# @jit(nopython=True)
+def numba_geminal_ixs(triplet, angle_mat):
+
+    empty_ixs = np.empty(0).astype(np.int16)
+    a = triplet[0]
+    b = triplet[1]
+    c = triplet[2]
+
+    # Check if invalid triplet (not applicable for this coupling type)
+    # Also get col argixs
+    col_ixs = np.ones(3)*-1
+    n_valid_ixs = 0
+    for i in range(3):
+        ix = triplet[i]
+        if ix == -2:
+            return empty_ixs
+        if ix != -1:
+            col_ixs[i] = i
+            n_valid_ixs += 1
+
+    valid_ixs = np.zeros(n_valid_ixs)
+    j = 0
+    for i in range(3):
+        if col_ixs[i] != -1:
+            valid_ixs[j] = col_ixs[i]
+            j += 1
+
+    # Normal ixs search
+    angle_submat = numba_extract_concat_cols(valid_ixs.astype(np.int16), angle_mat)
+    ixs1, revs1 = numba_find_line(triplet[triplet != -1], angle_submat)
+
+    # Mask output for symmetric queries
+    if not ((a != -1) & (b == -1) & (c != -1)):
+        ixs1 = ixs1[revs1 != 1]
+
+    # Reversed ixs search - imagine we have H=9 X=0 Y=1, with angle info in format 1 0 9
+    # If we looking at triplet 9 -1 -1 we won't find it, and we should
+    # Note that generally 9 -1 -1 is a different feature from -1 -1 9 (in the latter we'd have Y=9, not H=9
+    # In the case of a 2JHH bond, it is indeed the same feature (redundant)
+    valid_ixs = 2 - valid_ixs[::-1] # geminal angles, 3 elements means max ix 2 (reverse to restore since subtraction also reverses)
+    angle_submat = numba_extract_concat_cols(valid_ixs.astype(np.int16), angle_mat)
+    ixs2, revs2 = numba_find_line(triplet[triplet != -1][::-1], angle_submat) # also reverse query triplet
+
+    # Mask output for symmetric queries
+    if not ((a != -1) & (b == -1) & (c != -1)):
+        ixs2 = ixs2[revs2 != 1]
+
+    # Union of both queries
+    ixs = numba_union_arr(ixs1, ixs2)
+
+    return ixs
+
+def numba_vicinal_ixs(quadruplet, torsion_mat):
+
+    empty_ixs = np.empty(0).astype(np.int16)
+    a = quadruplet[0]
+    b = quadruplet[1]
+    c = quadruplet[2]
+    d = quadruplet[3]
+
+    # Check if invalid quadruplet (not applicable for this coupling type)
+    # Also get col argixs
+    col_ixs = np.ones(4)*-1
+    n_valid_ixs = 0
+    for i in range(4):
+        ix = quadruplet[i]
+        if ix == -2:
+            return empty_ixs
+        if ix != -1:
+            col_ixs[i] = i
+            n_valid_ixs += 1
+
+    valid_ixs = np.zeros(n_valid_ixs)
+    j = 0
+    for i in range(4):
+        if col_ixs[i] != -1:
+            valid_ixs[j] = col_ixs[i]
+            j += 1
+
+    # Normal ixs search
+    torsion_submat = numba_extract_concat_cols(valid_ixs.astype(np.int16), torsion_mat)
+    ixs1, revs1 = numba_find_line(quadruplet[quadruplet != -1], torsion_submat)
+
+    # Mask output for symmetric queries
+    if (b != c) | (a != d):
+        ixs1 = ixs1[revs1 != 1]
+
+    # Reversed ixs search - imagine we have H=9 X=0 Y=1, with angle info in format 1 0 9
+    # If we looking at triplet 9 -1 -1 we won't find it, and we should
+    # Note that generally 9 -1 -1 is a different feature from -1 -1 9 (in the latter we'd have Y=9, not H=9
+    # In the case of a 2JHH bond, it is indeed the same feature (redundant)
+    valid_ixs = 3 - valid_ixs[::-1] # geminal angles, 3 elements means max ix 2 (reverse to restore since subtraction also reverses)
+    torsion_submat = numba_extract_concat_cols(valid_ixs.astype(np.int16), torsion_mat)
+    ixs2, revs2 = numba_find_line(quadruplet[quadruplet != -1][::-1], torsion_submat) # also reverse query triplet
+
+    # Mask output for symmetric queries
+    if (b != c) | (a != d):
+        ixs2 = ixs2[revs2 != 1]
+
+    # Union of both queries
+    ixs = numba_union_arr(ixs1, ixs2)
+
+    return ixs
+
+# @jit(nopython=True)
+def numba_angle_features(mol_ptypes, angle_mat, angles, torsion_mat, torsions, nfeats):
+
+    NPAIRS = mol_ptypes.shape[0]
+
+    feats = np.empty(shape=(NPAIRS, nfeats), dtype=np.float32)
+    feats.fill(np.nan)
+
+    for i in range(NPAIRS):
+        a = mol_ptypes[i, 0]
+        b = mol_ptypes[i, 1]
+        t = mol_ptypes[i, 2]
+
+        # Initialize H X Y Z
+
+        angle_mat_ends = numba_extract_concat_cols(np.array([0, 2], dtype=np.int16), angle_mat)
+        if torsion_mat.size > 0: # if torsions exist
+            print(torsion_mat.shape)
+            torsion_mat_ends = numba_extract_concat_cols(np.array([0, 3], dtype=np.int16), torsion_mat)
+
+        UNDEFINED_IX = -2 # -1 reserved for empty placeholder on feature variations below
+        H = a
+        X = UNDEFINED_IX
+        Y = UNDEFINED_IX
+        Z = UNDEFINED_IX
+        if t == 0 or t == 1:
+            X = b
+        elif t == 2 or t == 3 or t == 4:
+            x_ix, revs = numba_find_line(np.array([a, b]), angle_mat_ends)
+            X = angle_mat[x_ix[0], 1] # Index 0 since H forms only 1 bond
+            Y = b
+        else:
+            x_ixs, revs = numba_find_line(np.array([a, b]), torsion_mat_ends)
+            # There is only one X for the same reason as in 2J, H can only form 1 bond
+            # Note pairs are supplied always H first yet torsions might be computed
+            # in both directions
+            if revs[0]: # H found last, hence X is before last (pos 2)
+                X_ix = 2
+            else: # H found first, no reversion, hence X is just after first (pos 1)
+                X_ix = 1
+            X = torsion_mat[x_ixs[0], X_ix]
+            Z = b
+
+        # Get all possible angle/torsion partial/complete combinations
+        angle_combs, torsion_combs = numba_get_angle_torsion_combinations(H, X, Y, Z)
+
+        # Compute ixs and aggregations per combination
+
+        AGGS = 4
+
+        # Angles
+        NANG_COMBS = angle_combs.shape[0]
+        for j in range(NANG_COMBS):
+            ixs = numba_geminal_ixs(angle_combs[j, :], angle_mat=angle_mat)
+            NANGLES = ixs.size
+            if NANGLES:
+                agg_angles = angles[ixs]
+                feats[i, j*AGGS] = agg_angles.size
+                feats[i, j*AGGS+1] = np.min(agg_angles)
+                feats[i, j*AGGS+2] = np.max(agg_angles)
+                feats[i, j*AGGS+3] = np.mean(agg_angles)
+
+        COL_OFFSET = NANG_COMBS * AGGS
+
+        # Torsions
+        NTORS_COMBS = torsion_combs.shape[0]
+        for j in range(NTORS_COMBS):
+            ixs = numba_vicinal_ixs(torsion_combs[j, :], torsion_mat=torsion_mat)
+            NTORSIONS = ixs.size
+            if NTORSIONS:
+                agg_torsions = torsions[ixs]
+                feats[i, COL_OFFSET + j * AGGS] = agg_torsions.size
+                feats[i, COL_OFFSET + j * AGGS + 1] = np.min(agg_torsions)
+                feats[i, COL_OFFSET + j * AGGS + 2] = np.max(agg_torsions)
+                feats[i, COL_OFFSET + j * AGGS + 3] = np.mean(agg_torsions)
+
+    return feats
+
 @jit(nopython=True)
 def numba_experimental_features(xyz, pairs):
     N_ATOMS = xyz.shape[0]  # Number of atoms in molecule
@@ -228,6 +338,10 @@ def numba_experimental_features(xyz, pairs):
     exp_feats[:, :] = N_ATOMS
 
     return exp_feats
+
+'''
+Feature engineering
+'''
 
 def gps_standard_features(max_num_feat_atoms, save_dir, prefix):
 
@@ -355,15 +469,10 @@ def core_features(save_dir, prefix):
         '3JHC': 6,
         '3JHN': 7,
     }
-    
-    aggs = ['min', 'max', 'avg']
-    feature_names = [
-        'geminal_angle',
-        # 'min_vicinal_angle',
-        # 'max_vicinal_angle',
-        # 'avg_vicinal_angle',
-    ]
-    for n in ['all_x_pivot_angles', 'all_y_pivot_angles']:#, 'all_xy_center_torsions']:
+
+    feature_names = []
+    aggs = ['num', 'min', 'max', 'avg']
+    for n in get_angle_torsion_agg_names():
         feature_names.extend([f'{n}_{agg}' for agg in aggs])
 
     # Load data
@@ -400,7 +509,8 @@ def core_features(save_dir, prefix):
 
         # For each molecule
         feature_chunks = []
-        for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
+        for mol_name in tqdm.tqdm(['dsgdb9nsd_035567'], total=df_uniques.shape[0]):
+        # for mol_name in tqdm.tqdm(df_uniques, total=df_uniques.shape[0]):
             for mol in readfile('xyz', f'data/structures/{mol_name}.xyz'):
                 mol = mol.OBMol
 
@@ -432,12 +542,29 @@ def core_features(save_dir, prefix):
                 torsions.append([torsion[0], torsion[1], torsion[2], torsion[3], torsion_in_degrees])
             if torsions:
                 torsion_mat = np.vstack(torsions)
+                torsion_mat_ixs = torsion_mat[:, :4].astype(np.int16)
+                torsion_mat_angles = torsion_mat[:, 4].astype(np.float32)
             else:
-                torsion_mat = np.zeros(1)
+                torsion_mat_ixs = np.empty(0)
+                torsion_mat_angles = np.empty(0)
+
 
             # Feat engineering
-            feats = numba_angle_features(mol_ptypes.astype(int), angle_mat.astype(int), torsion_mat, len(feature_names))
+            feats = numba_angle_features(
+                mol_ptypes=mol_ptypes.astype(np.int16),
+                angle_mat=angle_mat[:,:3].astype(np.int16),
+                angles=angle_mat[:,3].astype(np.float32),
+                torsion_mat=torsion_mat_ixs.astype(np.int16),
+                torsions=torsion_mat_angles.astype(np.float32),
+                nfeats=len(feature_names),
+            )
             feature_chunks.append(feats)
+        #
+        # res = pd.DataFrame(
+        #     data=np.vstack(feature_chunks),
+        #     columns=feature_names,
+        # )
+        # print(1)
 
         pd.DataFrame(
             data=np.vstack(feature_chunks),
@@ -575,6 +702,6 @@ def core_features_rings(save_dir, prefix):
 if __name__ == '__main__':
     # gps_standard_features(15, save_dir='features', prefix='gps_base')
     # cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
-    core_features(save_dir='features', prefix='core_feats_v2')
+    core_features(save_dir='features', prefix='core_feats_angles')
     # core_features_rings(save_dir='features', prefix='ring_feats_v2')
     # test_cyl()

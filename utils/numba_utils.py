@@ -10,33 +10,189 @@ from plotly.offline import init_notebook_mode, iplot
 from sympy.geometry import Point3D
 
 @jit(nopython=True)
-def numba_find_line(line, arr, accept_reverse=True):
-    N = arr.shape[0]
-    a = line[0]
-    b = line[1]
-    NA = -1
-    ixs = np.ones(N) * NA
-    iii = 0
-    for i in range(N):
-        c = arr[i, 0]
-        d = arr[i, 1]
-        if ((a==c) & (b==d)) | ((a==d) & (b==c)):
-            ixs[iii] = i
-            iii += 1
-    return ixs[ixs > NA].astype(np.uint16)
+def numba_union_arr(arr1, arr2):
+    ''' 
+    :return: non repeating union on arr1 and arr2 
+    '''
+    conc = np.hstack((arr1, arr2))
+    return np.unique(conc)
+
+@jit#(nopython=True)
+def numba_extract_concat_cols(cols, arr):
+    '''
+    numpy list indexing not implemented in numba
+    '''
+    N_COLS = cols.size
+    ret = np.empty(shape=(arr.shape[0], N_COLS)).astype(np.int16)
+    for i in range(N_COLS):
+        col = arr[:, cols[i]]
+        ret[:, i] = col
+    return ret
 
 @jit(nopython=True)
-def numba_args_where(num, vec):
-    N = vec.shape[0]
+def numba_find_line(line, arr):
+    '''
+    find indexes where line appears in arr, returning equally sized array
+    indicating where line was found in reverse 
+    :param line: 
+    :param arr: 
+    :return: 
+    '''
+
+    LINESIZE = line.shape[0]
+    N = arr.shape[0]
     NA = -1
     ixs = np.ones(N) * NA
+    revs = ixs.copy()
     iii = 0
-    for i in range(N):
-        c = vec[i]
-        if c==num:
-            ixs[iii] = i
-            iii += 1
-    return ixs[ixs > NA].astype(np.uint16)
+
+    if LINESIZE == 1:
+        a1 = line[0]
+        for i in range(N):
+            b1 = arr[i][0]
+            if b1 == a1:
+                ixs[iii] = i
+                revs[iii] = 0 # no reverse for 1d lines
+                iii += 1
+
+    elif LINESIZE == 2:
+        a2 = line[0]
+        b2 = line[1]
+        for i in range(N):
+            c2 = arr[i, 0]
+            d2 = arr[i, 1]
+
+            if (a2==c2) & (b2==d2):
+                ixs[iii] = i
+                revs[iii] = 0
+                iii += 1
+
+            # reverse match
+            if (a2==d2) & (b2==c2):
+                ixs[iii] = i
+                revs[iii] = 1
+                iii += 1
+
+    elif LINESIZE == 3:
+        a3 = line[0]
+        b3 = line[1]
+        c3 = line[2]
+        for i in range(N):
+            d3 = arr[i, 0]
+            e3 = arr[i, 1]
+            f3 = arr[i, 2]
+
+            if (a3 == d3) & (b3 == e3) & (c3 == f3):
+                ixs[iii] = i
+                revs[iii] = 0
+                iii += 1
+
+            # reverse match
+            if (a3 == f3) & (b3 == e3) & (c3 == d3):
+                ixs[iii] = i
+                revs[iii] = 1
+                iii += 1
+
+    elif LINESIZE == 4:
+        a4 = line[0]
+        b4 = line[1]
+        c4 = line[2]
+        d4 = line[3]
+        for i in range(N):
+            e4 = arr[i, 0]
+            f4 = arr[i, 1]
+            g4 = arr[i, 2]
+            h4 = arr[i, 2]
+
+            if (a4 == e4) & (b4 == f4) & (c4 == g4) & (d4 == h4):
+                ixs[iii] = i
+                revs[iii] = 0
+                iii += 1
+
+            # reverse match
+            if (a4 == h4) & (b4 == g4) & (c4 == f4) & (d4 == e4):
+                ixs[iii] = i
+                revs[iii] = 1
+                iii += 1
+
+    else:
+        raise ValueError('Finding line greater than 4 not implemented')
+
+    return ixs[ixs > NA].astype(np.int16), revs[ixs > NA].astype(np.int16)
+
+def get_angle_torsion_agg_names():
+    return [
+        'h.-.-',
+        '-.x.-',
+        '-.-.y',
+        'h.x.-',
+        '-.x.y',
+        'h.-.y',
+        'h.x.y',
+        'x.-.-',
+        '-.y.-',
+        '-.-.z',
+        'x.y.-',
+        '-.y.z',
+        'x.-.z',
+        'x.y.z',
+        'h.-.-.-',
+        '-.x.-.-',
+        '-.-.y.-',
+        '-.-.-.z',
+        'h.x.-.-',
+        '-.x.y.-',
+        '-.-.y.z',
+        'h.-.y.-',
+        '-.x.-.z',
+        'h.-.-.z',
+        'h.x.y.-',
+        '-.x.y.z',
+        'h.-.y.z',
+        'h.x.-.z',
+        'h.x.y.z',
+    ]
+
+@jit
+def numba_get_angle_torsion_combinations(h, x, y, z):
+    o = -1
+    geminal_combs = np.array([
+        [h, o, o],
+        [o, x, o],
+        [o, o, y],
+        [h, x, o],
+        [o, x, y],
+        [h, o, y],
+        [h, x, y],
+        [x, o, o],
+        [o, y, o],
+        [o, o, z],
+        [x, y, o],
+        [o, y, z],
+        [x, o, z],
+        [x, y, z],
+    ]).astype(np.int16)
+
+    torsion_combs = np.array([
+        [h, o, o, o],
+        [o, x, o, o],
+        [o, o, y, o],
+        [o, o, o, z],
+        [h, x, o, o],
+        [o, x, y, o],
+        [o, o, y, z],
+        [h, o, y, o],
+        [o, x, o, z],
+        [h, o, o, z],
+        [h, x, y, o],
+        [o, x, y, z],
+        [h, o, y, z],
+        [h, x, o, z],
+        [h, x, y, z],
+    ]).astype(np.int16)
+
+    return geminal_combs, torsion_combs
+
 
 @jit(nopython=True)
 def numba_ring_mat_feats(rmat, ixs):
