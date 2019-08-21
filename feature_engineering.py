@@ -143,7 +143,7 @@ def test_cyl():
     rs = np.array([0.5, 1.5, 5])
     print(numba_cyl_features(xyz, pairs, rs))
 
-# @jit(nopython=True)
+@jit(nopython=True)
 def numba_geminal_ixs(triplet, angle_mat):
 
     empty_ixs = np.empty(0).astype(np.int16)
@@ -310,7 +310,7 @@ def numba_angle_features(mol_ptypes, angle_mat, angles, torsion_mat, torsions, n
             ixs = numba_geminal_ixs(angle_combs[j, :], angle_mat=angle_mat)
             NANGLES = ixs.size
             if NANGLES:
-                agg_angles = angles[ixs]
+                agg_angles = np.cos(angles[ixs])
                 feats[i, j*AGGS] = agg_angles.size
                 feats[i, j*AGGS+1] = np.min(agg_angles)
                 feats[i, j*AGGS+2] = np.max(agg_angles)
@@ -710,6 +710,6 @@ def core_features_rings(save_dir, prefix):
 if __name__ == '__main__':
     # gps_standard_features(15, save_dir='features', prefix='gps_base')
     # cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
-    core_features(save_dir='features', prefix='core_feats_angles')
+    core_features(save_dir='features', prefix='core_feats_angles_cos')
     # core_features_rings(save_dir='features', prefix='ring_feats_v2')
     # test_cyl()

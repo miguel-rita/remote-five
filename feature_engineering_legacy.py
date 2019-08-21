@@ -1,7 +1,7 @@
 import glob, tqdm, pickle
 import numpy as np
 import pandas as pd
-import qml
+import qml, gc
 from dscribe.descriptors import ACSF
 from ase.io import read
 
@@ -242,47 +242,47 @@ def compute_acsf_descriptors(prefix, rcutoffs):
     species = ['H', 'C', 'N', 'O', 'F']
     g2_params = [
         [1, 0],
-        [1, 1],
+        # [1, 1],
         [1, 2],
-        [1, 3],
-        [1, 4],
-        [4, 1],
+        # [1, 3],
+        # [1, 4],
+        # [4, 1],
         [4, 2],
-        [4, 3],
-        [4, 4],
+        # [4, 3],
+        # [4, 4],
     ]
     g4_params = [
         [1, 1, 1],
-        [1, 4, 1],
+        # [1, 4, 1],
         [1, 8, 1],
-        [1, 16, 1],
-        [1, 32, 1],
-        [1, 64, 1],
+        # [1, 16, 1],
+        # [1, 32, 1],
+        # [1, 64, 1],
         [1, 1, -1],
-        [1, 4, -1],
+        # [1, 4, -1],
         [1, 8, -1],
-        [1, 16, -1],
-        [1, 32, -1],
-        [1, 64, -1],
+        # [1, 16, -1],
+        # [1, 32, -1],
+        # [1, 64, -1],
     ]
-    g5_params = [
-        [1, 1, 1],
-        [1, 4, 1],
-        [1, 8, 1],
-        [1, 16, 1],
-        [1, 32, 1],
-        [1, 64, 1],
-        [1, 1, -1],
-        [1, 4, -1],
-        [1, 8, -1],
-        [1, 16, -1],
-        [1, 32, -1],
-        [1, 64, -1],
-    ]
+    # g5_params = [
+    #     [1, 1, 1],
+    #     # [1, 4, 1],
+    #     [1, 8, 1],
+    #     # [1, 16, 1],
+    #     [1, 32, 1],
+    #     # [1, 64, 1],
+    #     [1, 1, -1],
+    #     # [1, 4, -1],
+    #     [1, 8, -1],
+    #     # [1, 16, -1],
+    #     [1, 32, -1],
+    #     # [1, 64, -1],
+    # ]
     featnames = ['g1'] +\
                 [f'g2_{i:d}' for i in range(len(g2_params))] +\
-                [f'g4_{i:d}' for i in range(len(g4_params) * 3)] +\
-                [f'g5_{i:d}' for i in range(len(g5_params) * 3)]
+                [f'g4_{i:d}' for i in range(len(g4_params) * 3)]# +\
+                # [f'g5_{i:d}' for i in range(len(g5_params) * 3)]
 
     col_names = []
     for s in species:
@@ -294,7 +294,7 @@ def compute_acsf_descriptors(prefix, rcutoffs):
     acsf = ACSF(
         g2_params=g2_params,
         g4_params=g4_params,
-        g5_params=g5_params,
+        # g5_params=g5_params,
         species=species,
         rcut=rcutoffs[0],
     )
@@ -308,7 +308,7 @@ def compute_acsf_descriptors(prefix, rcutoffs):
         mols.append(mol)
 
     # Create ACSF output for all mols
-    acsf_mol = acsf.create(mols, positions=None)
+    acsf_mol = acsf.create(mols, positions=None, n_jobs=4)
 
     # Save ACSF descriptors
     pd.DataFrame(
@@ -317,14 +317,18 @@ def compute_acsf_descriptors(prefix, rcutoffs):
 
 def compute_acsf_features(acsf_file, save_dir, prefix):
 
-    train_extended, test_extended = pd.read_hdf('data/train_expanded.h5', mode='r'), pd.read_hdf(
-        'data/test_expanded.h5', mode='r')
     struct = pd.read_csv('data/structures.csv')
-    acsf = pd.read_hdf(f'data/descriptors/{acsf_file}.h5')
-    acsf_cols = list(acsf.columns)
-    acsf = pd.concat([struct, acsf], axis=1)
+    acsf_ = pd.read_hdf(f'data/descriptors/{acsf_file}.h5').astype(np.float16)
+    acsf_cols = list(acsf_.columns)
+    acsf = pd.concat([struct, acsf_], axis=1).astype({c : np.float16 for c in acsf_cols})
+    del acsf_, struct
+    gc.collect()
 
-    for name, df in zip(['train', 'test'], [train_extended, test_extended]):
+    def gen():
+        yield 'train', pd.read_hdf('data/train_expanded.h5', mode='r')
+        yield 'test', pd.read_hdf('data/test_expanded.h5', mode='r')
+
+    for name, df in gen():
 
         def map_atom_info(df, atom_ix):
             df = pd.merge(
@@ -357,9 +361,9 @@ if __name__ == '__main__':
     # expand_dataset('./data')
     # angle_features(save_dir='features', prefix='angle_feats')
     # distance_features(save_dir='features', prefix='simple_distance_v2')
-    for r in [2,4,6,8,10]:
+    for r in [1.5, 3]:
         print(r)
-        name=f'g2_g4_g5_v3_r{r:d}'
+        name=f'g2_g4_v2_0_r{r:.2f}'
         compute_acsf_descriptors(prefix=name, rcutoffs=[r])
         compute_acsf_features(acsf_file=name, save_dir='features', prefix=name)
     # calc_coloumb_matrices(size=29, save_path='data/descriptors/CMs_unsorted.pkl')
