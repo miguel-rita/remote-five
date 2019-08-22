@@ -1,0 +1,13 @@
+20-Aug-19 20:27:18 - root - INFO - Using feature sets: ['gps_base', 'core_feats_angles', 'cm_unsorted_maxterms_15', 'g2_g4_v2_0_r1.50', 'g2_g4_v2_0_r3.00']
+20-Aug-19 20:28:26 - root - INFO - LGB parameters:
+20-Aug-19 20:28:26 - root - INFO -      objective:regression
+20-Aug-19 20:28:26 - root - INFO -      metric:mae
+20-Aug-19 20:28:26 - root - INFO -      verbosity:-1
+20-Aug-19 20:28:26 - root - INFO -      boosting_type:gbdt
+20-Aug-19 20:28:26 - root - INFO -      learning_rate:0.2
+20-Aug-19 20:28:26 - root - INFO -      num_leaves:128
+20-Aug-19 20:28:26 - root - INFO -      min_child_samples:80
+20-Aug-19 20:28:26 - root - INFO -      n_estimators:1500
+20-Aug-19 20:28:26 - root - INFO -      n_jobs:-1
+20-Aug-19 20:28:26 - root - INFO - CV params:
+20-Aug-19 20:28:26 - root - INFO -      test_size: 0.20

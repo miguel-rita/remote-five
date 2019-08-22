@@ -40,14 +40,21 @@ def numba_dist_matrix(mol_xyz):
     return dmat
 
 @jit(nopython=True)
-def numba_gps_features(xyz, pairs, n_feat_atoms):
+def numba_gps_features(xyz, pairs, atoms, MAX_N_FEAT_ATOMS, filter=-1):
+    '''
+    :param xyz:
+    :param pairs:
+    :param atoms:
+    :param MAX_N_FEAT_ATOMS:
+    :param filter: if -1 consider all atom types
+    :return:
+    '''
     N_PAIRS = pairs.shape[0]  # Number of scalar coupling pairs for this molecule
     N_CORE_ATOMS = 4  # Number of core atoms to serve as representation basis
     N_ATOMS = xyz.shape[0]  # Number of atoms in molecule
-
     dist_mat = numba_dist_matrix(xyz)
 
-    gps_feats = np.empty((N_PAIRS, N_CORE_ATOMS * n_feat_atoms)).astype(np.float32)
+    gps_feats = np.empty((N_PAIRS, (N_CORE_ATOMS + 1) * MAX_N_FEAT_ATOMS)).astype(np.float32)
     gps_feats.fill(np.nan)  # Placeholder
     for i in range(N_PAIRS):
 
@@ -55,31 +62,56 @@ def numba_gps_features(xyz, pairs, n_feat_atoms):
         a0 = pairs[i, 0]
         a1 = pairs[i, 1]
         center = (xyz[a0, :] + xyz[a1, :]) * 0.5
-        square_ds_to_center = np.empty(N_ATOMS).astype(np.float32)
+
+        mask = np.ones(N_ATOMS)
+        if filter != -1:
+            for a in range(N_ATOMS):
+                if atoms[a] != filter:
+                    mask[a] = 0
+            mask[a0] = 1
+            mask[a1] = 1
+        N_MASK_ATOMS = int(np.sum(mask))
+        masked_ixs = np.empty(N_MASK_ATOMS).astype(np.int16)
+        mix = 0
+        for i_ in range(N_ATOMS):
+            if mask[i_] == 1:
+                masked_ixs[mix] = i_
+                mix += 1
+
+        square_ds_to_center = np.empty(N_MASK_ATOMS).astype(np.float32)
         square_ds_to_center.fill(np.nan)
 
-        for j in range(N_ATOMS):
-            square_ds_to_center[j] = (xyz[j, 0] - center[0]) ** 2.0 + (xyz[j, 1] - center[1]) ** 2.0 + (
-                    xyz[j, 2] - center[2]) ** 2.0
+        for j in range(N_MASK_ATOMS):
+            mj = masked_ixs[j]
+            square_ds_to_center[j] = (xyz[mj, 0] - center[0]) ** 2.0 + (xyz[mj, 1] - center[1]) ** 2.0 + (
+                    xyz[mj, 2] - center[2]) ** 2.0
 
         # Get argsort
         asort_ds_to_center = np.argsort(square_ds_to_center)
+        asort_after_mask = np.copy(asort_ds_to_center)
+
+        # If masked get correct masked ixs
+        for j in range(N_MASK_ATOMS):
+            pos_in_orig = asort_ds_to_center[j]
+            asort_after_mask[j] = masked_ixs[pos_in_orig]
 
         # Get core atom indexes
         feat_atoms = [a0, a1]
         for aix in asort_ds_to_center:
             if aix != a0 and aix != a1:
                 feat_atoms.append(aix)
-            if len(feat_atoms) == min(n_feat_atoms, N_ATOMS):
+            if len(feat_atoms) == min(MAX_N_FEAT_ATOMS, N_MASK_ATOMS):
                 break
-        core_atoms = feat_atoms[:min(N_CORE_ATOMS, N_ATOMS)]
+        core_atoms = feat_atoms[:min(N_CORE_ATOMS, N_MASK_ATOMS)]
         # At this stage for 3 atom molecules core_atoms has len() 3, but no problem since our feat array is initialized with np.nan by default
 
-        for s in range(min(n_feat_atoms, N_ATOMS)):
+        for s in range(min(MAX_N_FEAT_ATOMS, N_MASK_ATOMS)):
             feat_atom_ix = feat_atoms[s]
-            for t in range(min(N_CORE_ATOMS, N_ATOMS)):
+            for t in range(min(N_CORE_ATOMS, N_MASK_ATOMS)):
                 core_atom_ix = core_atoms[t]
-                gps_feats[i, s * N_CORE_ATOMS + t] = dist_mat[feat_atom_ix, core_atom_ix]
+                gps_feats[i, s * (N_CORE_ATOMS + 1) + t] = dist_mat[feat_atom_ix, core_atom_ix]
+            # Add feat_atom type
+            gps_feats[i, s * (N_CORE_ATOMS + 1) + t + 1] = atoms[feat_atom_ix]
 
     return gps_feats
 
@@ -125,6 +157,7 @@ def numba_cyl_features(xyz, pairs, rs):
             out[i, j] = ct
 
     return out
+
 def test_cyl():
     xyz = np.array([
         [0,0,0],
@@ -362,6 +395,7 @@ def gps_standard_features(max_num_feat_atoms, save_dir, prefix):
     xyz_ssx, xyz_dict = gen_lookups(structures, 'molecule_name')
     train_ssx, train_dict = gen_lookups(train, 'molecule_name')
     test_ssx, test_dict = gen_lookups(test, 'molecule_name')
+    xyz_atom = structures['atom'].map({'H': 1, 'C': 6, 'N': 7, 'O': 8, 'F': 9}).values.astype(np.uint8)
 
     # Numpy data
     xyz = structures[['x', 'y', 'z']].values.astype(np.float32)
@@ -391,18 +425,29 @@ def gps_standard_features(max_num_feat_atoms, save_dir, prefix):
             mol_xyz = xyz[xyz_ssx[mol_ix]:xyz_ssx[mol_ix + 1], :]
             mol_pairs = df_pairs[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
             mol_types = df_types[df_ssx[mol_pairs_ix]:df_ssx[mol_pairs_ix + 1], :]
+            mol_atom = xyz_atom[xyz_ssx[mol_ix]:xyz_ssx[mol_ix + 1]]
 
             # Core calculations
-            gps_feats = numba_gps_features(mol_xyz, mol_pairs, max_num_feat_atoms)
-            # experimental_feats = numba_experimental_features(mol_xyz, mol_pairs)
+            gps_feats = numba_gps_features(mol_xyz, mol_pairs, mol_atom, max_num_feat_atoms, filter=-1)
+            gps_feats_h = numba_gps_features(mol_xyz, mol_pairs, mol_atom, max_num_feat_atoms, filter=1)
+            gps_feats_c = numba_gps_features(mol_xyz, mol_pairs, mol_atom, max_num_feat_atoms, filter=6)
+            gps_feats_n = numba_gps_features(mol_xyz, mol_pairs, mol_atom, max_num_feat_atoms, filter=7)
+            gps_feats_o = numba_gps_features(mol_xyz, mol_pairs, mol_atom, max_num_feat_atoms, filter=8)
 
             feats.append(np.hstack([
                 gps_feats,
-                # experimental_feats,
+                gps_feats_h,
+                gps_feats_c,
+                gps_feats_n,
+                gps_feats_o,
             ]))
 
         # Define feature names and save to disk
         feat_names = get_gps_feature_cols(max_num_feat_atoms, include_redundant=True)
+        feat_names += get_gps_feature_cols(max_num_feat_atoms, include_redundant=True, prefix='H')
+        feat_names += get_gps_feature_cols(max_num_feat_atoms, include_redundant=True, prefix='C')
+        feat_names += get_gps_feature_cols(max_num_feat_atoms, include_redundant=True, prefix='N')
+        feat_names += get_gps_feature_cols(max_num_feat_atoms, include_redundant=True, prefix='O')
         pd.DataFrame(
             data=np.vstack(feats),
             columns=feat_names,
@@ -567,12 +612,7 @@ def core_features(save_dir, prefix):
                 nfeats=len(feature_names),
             )
             feature_chunks.append(feats)
-        #
-        # res = pd.DataFrame(
-        #     data=np.vstack(feature_chunks),
-        #     columns=feature_names,
-        # )
-        # print(1)
+
 
         pd.DataFrame(
             data=np.vstack(feature_chunks),
@@ -708,8 +748,8 @@ def core_features_rings(save_dir, prefix):
         ).astype(np.int16).to_hdf(f'{save_dir}/{prefix}_{df_name}.h5', key='df', mode='w')
 
 if __name__ == '__main__':
-    # gps_standard_features(15, save_dir='features', prefix='gps_base')
+    gps_standard_features(15, save_dir='features', prefix='gps_base_plus_h')
     # cyl_standard_features([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0], save_dir='features', prefix='cyl_feats')
-    core_features(save_dir='features', prefix='core_feats_angles_cos')
+    # core_features(save_dir='features', prefix='core_feats_angles_cos')
     # core_features_rings(save_dir='features', prefix='ring_feats_v2')
     # test_cyl()

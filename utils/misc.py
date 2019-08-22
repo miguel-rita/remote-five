@@ -9,16 +9,21 @@ def find_line(line, arr, accept_reverse=True):
         l.extend(np.argwhere(np.equal(arr,line[::-1]).all(axis=1))[:,0])
     return l
 
-def get_gps_feature_cols(n_atoms, include_redundant=False):
+def get_gps_feature_cols(n_atoms, include_redundant=False, prefix=None):
     if include_redundant:
         base_ds = []
         for i in np.arange(4):
-            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)])
+            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)] + [f'd{i}_atom'])
     else:
-        base_ds = ['d0_1', 'd0_2', 'd0_3', 'd1_2', 'd1_3', 'd2_3']
+        base_ds = ['d0_1', 'd0_2', 'd0_3', 'd1_2', 'd1_3', 'd2_3', 'd2_atom', 'd3_atom']
     if n_atoms >= 4:
         for i in np.arange(4, n_atoms):
-            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)])
+            base_ds.extend([f'd{i}_{core_ix}' for core_ix in range(4)] + [f'd{i}_atom'])
+
+    # Add prefix
+    if prefix is not None:
+        base_ds = [prefix+c for c in base_ds]
+
     return base_ds
 
 def get_core_feature_cols(ctype):

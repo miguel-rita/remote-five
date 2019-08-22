@@ -26,7 +26,7 @@ def train_predict_coupling_type(coupling_type, train, test, y_tgt, local_lgb_par
     model = LGBMRegressor(**local_lgb_params)
     model.fit(X_train, y_train,
               eval_set=[(X_train, y_train), (X_val, y_val)], eval_metric='mae',
-              verbose=10000, early_stopping_rounds=20)
+              verbose=100, early_stopping_rounds=20)
 
     y_val_pred = model.predict(X_val)
     val_score = np.log(mean_absolute_error(y_val, y_val_pred))
@@ -249,13 +249,16 @@ def select_feats_per_type(ctype):
         'cyl_r_2.00',
         'cyl_r_3.00',
     ]
-
     gen_rfn = lambda c : [f'{c}_{n}' for n in ring_feature_names]
     aggs = ['num', 'min', 'max', 'avg']
 
     # Commom features to all types
-    feature_set = get_core_feature_cols(ctype=ctype)
-    feature_set = feature_set + [f'cos_{c}' for c in feature_set] + cm_fn
+    feature_set = get_gps_feature_cols(n_atoms=10, prefix='H') +\
+                  get_gps_feature_cols(n_atoms=10, prefix='C') +\
+                  get_gps_feature_cols(n_atoms=10, prefix='N') +\
+                  get_gps_feature_cols(n_atoms=10, prefix='O')
+    # feature_set = get_core_feature_cols(ctype=ctype)
+    # feature_set = feature_set + [f'cos_{c}' for c in feature_set] + cm_fn
     feats_1J = []#gen_rfn('x')
     feats_2J = []#gen_rfn('x') + gen_rfn('y')
     feats_3J = []
@@ -266,31 +269,24 @@ def select_feats_per_type(ctype):
         feature_set.extend(feats_1J)
 
     elif ctype == '1JHC':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_1J)
 
     elif ctype == '2JHH':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_2J)
 
     elif ctype == '2JHN':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_2J)
 
     elif ctype == '2JHC':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_2J)
 
     elif ctype == '3JHH':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_3J)
 
     elif ctype == '3JHC':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_3J)
 
     elif ctype == '3JHN':
-        feature_set.extend(get_gps_feature_cols(n_atoms=10))
         feature_set.extend(feats_3J)
 
     else:
@@ -336,10 +332,10 @@ def stack_one():
     )
 
     featsets = [
-        'gps_base',
-        'core_feats_angles',
-        'core_feats_angles_cos',
-        'cm_unsorted_maxterms_15',
+        'gps_base_plus_h',
+        # 'core_feats_angles',
+        # 'core_feats_angles_cos',
+        # 'cm_unsorted_maxterms_15',
     ]
     logging.info(f'Using feature sets: {featsets}')
     train, test, y_tgt = load_datasets(featsets=featsets)
@@ -353,9 +349,9 @@ def stack_one():
         'verbosity': -1,
         'boosting_type': 'gbdt',
         'learning_rate': 0.2,
-        'num_leaves': 256,
+        'num_leaves': 128,
         'min_child_samples': 80,
-        'n_estimators': 50000,
+        'n_estimators': 1500,
         'n_jobs': -1,
     }
     logging.info(f'LGB parameters:')
@@ -375,6 +371,7 @@ def stack_one():
     for ctype in train.type.unique():
 
         ctype_feats = select_feats_per_type(ctype)
+        print('Used features:', ctype_feats)
         logging.info(f'{ctype} features used:')
         for f in ctype_feats:
             logging.info(f'     {f}')
